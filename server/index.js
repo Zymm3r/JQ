@@ -8,6 +8,8 @@ const line = require('@line/bot-sdk');
 
 const app = express();
 const server = http.createServer(app);
+const path = require('path'); // Add path module
+
 const io = new Server(server, {
     cors: {
         origin: "*", // Allow all for dev
@@ -16,6 +18,9 @@ const io = new Server(server, {
 });
 
 app.use(cors());
+
+// Serve Static Files (Frontend)
+app.use(express.static(path.join(__dirname, '../client/dist'))); // Serve built files
 
 // --- LINE Webhook Config ---
 // Middleware to handle LINE signature validation
@@ -156,7 +161,12 @@ io.on('connection', (socket) => {
     });
 });
 
-const PORT = 3000;
+// All other requests -> Serve Frontend (SPA Support)
+app.get('*', (req, res) => {
+    res.sendFile(path.join(__dirname, '../client/dist/index.html'));
+});
+
+const PORT = process.env.PORT || 3000; // Use env PORT for Render
 server.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
 });
