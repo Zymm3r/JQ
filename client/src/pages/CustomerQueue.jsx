@@ -127,15 +127,35 @@ export default function CustomerQueue() {
                         </div>
                     ) : (
                         /* Fallback State: Manual Input */
-                        /* Fallback State: Manual Input Disabled per request */
-                        <div style={{ textAlign: 'center', padding: '20px 0' }}>
-                            <p style={{ color: 'var(--text-light)', marginBottom: 16 }}>
-                                กรุณาเปิดลิงก์นี้ในแอป <strong>LINE</strong> <br />เพื่อระบุตัวตนและจองคิว
+                        <>
+                            <div className="input-group">
+                                <label><User size={18} style={{ marginRight: 8, verticalAlign: 'text-bottom' }} />ชื่อของคุณ (Name)</label>
+                                <input
+                                    type="text"
+                                    placeholder="Ex. สมชาย"
+                                    value={name}
+                                    onChange={e => setName(e.target.value)}
+                                />
+                            </div>
+
+                            <div className="input-group">
+                                <label><MessageCircle size={18} style={{ marginRight: 8, verticalAlign: 'text-bottom' }} />LINE ID</label>
+                                <input
+                                    type="text"
+                                    placeholder="Ex. somchai.line"
+                                    value={lineId}
+                                    onChange={e => setLineId(e.target.value)}
+                                />
+                            </div>
+
+                            <button type="submit" className="btn btn-primary" disabled={submitting}>
+                                {submitting ? 'กำลังบันทึก...' : 'จองคิวทันที (Reserve Now)'}
+                            </button>
+
+                            <p style={{ textAlign: 'center', fontSize: '0.8rem', color: '#94a3b8', marginTop: 10 }}>
+                                *แนะนำ: เปิดใน LINE เพื่อจองง่ายๆ เพียงคลิกเดียว
                             </p>
-                            <a href="https://liff.line.me/2008779826-LxTz7RAT" className="btn btn-secondary" style={{ display: 'inline-block', textDecoration: 'none' }}>
-                                เปิดใน LINE
-                            </a>
-                        </div>
+                        </>
                     )}
                 </form>
             </div>
