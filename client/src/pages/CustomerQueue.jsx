@@ -103,48 +103,59 @@ export default function CustomerQueue() {
                 </div>
 
                 <form onSubmit={handleReserve}>
-                    {/* LIFF Integration Section */}
-                    {lineId && (
-                        <div style={{ marginBottom: 16, padding: 12, background: '#f0f9ff', borderRadius: 8, border: '1px solid #bae6fd' }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
-                                <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#0ea5e9' }} />
-                                <span style={{ fontSize: '0.9rem', fontWeight: 500, color: '#0369a1' }}>Logged in via LINE</span>
+                    {/* LIFF Active State: One Click Reserve */}
+                    {lineId ? (
+                        <div style={{ textAlign: 'center', marginBottom: 24 }}>
+                            <div style={{
+                                width: 80, height: 80, borderRadius: '50%', background: '#f1f5f9',
+                                margin: '0 auto 16px', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                border: '3px solid white', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)'
+                            }}>
+                                {/* Use actual profile image if potentially available later, now default icon */}
+                                <User size={40} color="var(--primary)" />
                             </div>
-                            <div style={{ fontSize: '0.8rem', color: '#64748b' }}>User ID: ...{lineId.slice(-6)}</div>
+                            <h3 style={{ margin: '0 0 8px', color: 'var(--text-dark)' }}>สวัสดี, {name}</h3>
+                            <p style={{ margin: 0, fontSize: '0.9rem', color: 'var(--text-light)' }}>
+                                ยืนยันการจองด้วยบัญชี LINE นี้
+                            </p>
+
+                            <div style={{ marginTop: 24 }}>
+                                <button type="submit" className="btn btn-primary" style={{ width: '100%', padding: '16px', fontSize: '1.2rem' }} disabled={submitting}>
+                                    {submitting ? 'กำลังจอง...' : 'ยืนยันการจอง (Confirm)'}
+                                </button>
+                            </div>
                         </div>
-                    )}
+                    ) : (
+                        /* Fallback State: Manual Input */
+                        <>
+                            <div className="input-group">
+                                <label><User size={18} style={{ marginRight: 8, verticalAlign: 'text-bottom' }} />ชื่อของคุณ (Name)</label>
+                                <input
+                                    type="text"
+                                    placeholder="Ex. สมชาย"
+                                    value={name}
+                                    onChange={e => setName(e.target.value)}
+                                />
+                            </div>
 
-                    <div className="input-group">
-                        <label><User size={18} style={{ marginRight: 8, verticalAlign: 'text-bottom' }} />ชื่อของคุณ (Name)</label>
-                        <input
-                            type="text"
-                            placeholder="Ex. สมชาย"
-                            value={name}
-                            onChange={e => setName(e.target.value)}
-                            readOnly={!!lineId} // Lock name if from LINE? Or allow edit? Let's allow edit but default to profile name. Actually user might want to change it.
-                        />
-                    </div>
+                            <div className="input-group">
+                                <label><MessageCircle size={18} style={{ marginRight: 8, verticalAlign: 'text-bottom' }} />LINE ID</label>
+                                <input
+                                    type="text"
+                                    placeholder="Ex. somchai.line"
+                                    value={lineId}
+                                    onChange={e => setLineId(e.target.value)}
+                                />
+                            </div>
 
-                    <div className="input-group">
-                        <label><MessageCircle size={18} style={{ marginRight: 8, verticalAlign: 'text-bottom' }} />LINE ID</label>
-                        <input
-                            type="text"
-                            placeholder="Ex. somchai.line"
-                            value={lineId}
-                            onChange={e => setLineId(e.target.value)}
-                            readOnly={!!lineId} // Lock ID if from LINE to prevent errors
-                            style={lineId ? { background: '#f1f5f9', color: '#64748b' } : {}}
-                        />
-                    </div>
+                            <button type="submit" className="btn btn-primary" disabled={submitting}>
+                                {submitting ? 'กำลังบันทึก...' : 'จองคิวทันที (Reserve Now)'}
+                            </button>
 
-                    <button type="submit" className="btn btn-primary" disabled={submitting}>
-                        {submitting ? 'กำลังบันทึก...' : 'จองคิวทันที (Reserve Now)'}
-                    </button>
-
-                    {!lineId && (
-                        <p style={{ textAlign: 'center', fontSize: '0.8rem', color: '#94a3b8', marginTop: 10 }}>
-                            *เปิดใน LINE เพื่อจองอัตโนมัติ
-                        </p>
+                            <p style={{ textAlign: 'center', fontSize: '0.8rem', color: '#94a3b8', marginTop: 10 }}>
+                                *แนะนำ: เปิดใน LINE เพื่อจองง่ายๆ เพียงคลิกเดียว
+                            </p>
+                        </>
                     )}
                 </form>
             </div>
