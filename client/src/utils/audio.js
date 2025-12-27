@@ -30,6 +30,17 @@ export function playNotificationSound() {
 }
 
 export function playAlertSound() {
+    // Try playing the custom file first
+    // Note: User must fetch/put 'alert.m4a' in client/public/ folder
+    const audio = new Audio('/alert.m4a');
+    audio.play().catch(e => {
+        // console.warn("Custom sound not found or blocked, using fallback beep.", e);
+        playSynthAlert();
+    });
+}
+
+// Fallback synthetic beep
+function playSynthAlert() {
     try {
         const AudioContext = window.AudioContext || window.webkitAudioContext;
         if (!AudioContext) return;
