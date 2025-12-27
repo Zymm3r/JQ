@@ -66,13 +66,16 @@ export default function CustomerQueue() {
 
     const handleReserve = async (e) => {
         e.preventDefault();
-        if (!name || !lineId) return toast.error('กรุณากรอกข้อมูลให้ครบ');
+        // Validation: Name is required. LINE ID is optional (auto-generated if missing)
+        if (!name) return toast.error('กรุณากรอกชื่อ (Name is required)');
+
+        const finalLineId = lineId || `walk-in-${Date.now()}`; // Auto-generate if empty
 
         setSubmitting(true);
         try {
-            await api.post('/reserve', { id, name, lineId });
+            await api.post('/reserve', { id, name, lineId: finalLineId });
             toast.success('จองคิวสำเร็จ! (Reserved)');
-            localStorage.setItem('my_queue', JSON.stringify({ queueId: parseInt(id), name, lineId }));
+            localStorage.setItem('my_queue', JSON.stringify({ queueId: parseInt(id), name, lineId: finalLineId }));
         } catch (err) {
             toast.error(err.response?.data?.error || 'การจองล้มเหลว');
         } finally {
@@ -132,21 +135,13 @@ export default function CustomerQueue() {
                                 <label><User size={18} style={{ marginRight: 8, verticalAlign: 'text-bottom' }} />ชื่อของคุณ (Name)</label>
                                 <input
                                     type="text"
-                                    placeholder="Ex. สมชาย"
+                                    placeholder="โปรดระบุ"
                                     value={name}
                                     onChange={e => setName(e.target.value)}
                                 />
                             </div>
 
-                            <div className="input-group">
-                                <label><MessageCircle size={18} style={{ marginRight: 8, verticalAlign: 'text-bottom' }} />LINE ID</label>
-                                <input
-                                    type="text"
-                                    placeholder="Ex. somchai.line"
-                                    value={lineId}
-                                    onChange={e => setLineId(e.target.value)}
-                                />
-                            </div>
+                            {/* LINE ID input removed for simplicity. Auto-generated for walk-ins. */}
 
                             <button type="submit" className="btn btn-primary" disabled={submitting}>
                                 {submitting ? 'กำลังบันทึก...' : 'จองคิวทันที (Reserve Now)'}
