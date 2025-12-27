@@ -1,8 +1,7 @@
 node_modules/
-.env
 dist/
 build/
+.env
 .DS_Store
-*.db
-*.sqlite
-*.sqlite3
+*.log
+queue.db

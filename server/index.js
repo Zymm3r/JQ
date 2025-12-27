@@ -8,8 +8,6 @@ const line = require('@line/bot-sdk');
 
 const app = express();
 const server = http.createServer(app);
-const path = require('path'); // Add path module
-
 const io = new Server(server, {
     cors: {
         origin: "*", // Allow all for dev
@@ -19,9 +17,6 @@ const io = new Server(server, {
 
 app.use(cors());
 
-// Serve Static Files (Frontend)
-app.use(express.static(path.join(__dirname, '../client/dist'))); // Serve built files
-
 // --- LINE Webhook Config ---
 // Middleware to handle LINE signature validation
 // Note: build-in bodyParser cannot be used before this for signature validation to work
@@ -30,7 +25,7 @@ const lineConfig = {
     channelSecret: process.env.LINE_CHANNEL_SECRET,
 };
 
-// Webhook Route (MUST be before express.json)
+// Webhook Route
 app.post('/webhook', line.middleware(lineConfig), (req, res) => {
     Promise.all(req.body.events.map(handleEvent))
         .then((result) => res.json(result))
@@ -40,22 +35,24 @@ app.post('/webhook', line.middleware(lineConfig), (req, res) => {
         });
 });
 
-// --- Body Parser for other routes ---
-app.use(express.json());
-
-// Event Handler
 // Event Handler
 function handleEvent(event) {
     if (event.type !== 'message' || event.message.type !== 'text') {
         return Promise.resolve(null);
     }
 
-    // Auto-reply removed as per request.
-    // Just log for debugging if needed, or do nothing.
-    // console.log('Received message:', event.message.text);
+    // Reply with User ID
+    const userId = event.source.userId;
+    const replyText = `สวัสดีครับ! นี่คือ ID ของคุณ:\n\n${userId}\n\n(กดคัดลอก แล้วนำไปใส่ในช่องจองคิวได้เลยครับ)`;
 
-    return Promise.resolve(null);
+    return lineClient.replyMessage(event.replyToken, {
+        type: 'text',
+        text: replyText
+    });
 }
+
+// --- Body Parser for other routes ---
+app.use(express.json());
 
 // Helper to broadcast update
 function broadcastUpdate() {
@@ -83,7 +80,6 @@ app.get('/api/queues/:id', (req, res) => {
 
 // Reserve Queue
 app.post('/api/reserve', (req, res) => {
-    console.log('Reserve Request:', req.body);
     const { id, name, lineId } = req.body;
     if (!id || !name || !lineId) {
         return res.status(400).json({ error: 'Missing fields' });
@@ -96,25 +92,17 @@ app.post('/api/reserve', (req, res) => {
         return res.status(409).json({ error: 'Queue already reserved or called' });
     }
 
-    // Check if this lineId already has an active queue AND ensure lineId is valid
-    if (lineId && lineId.trim() !== "") {
-        const existing = db.prepare("SELECT * FROM queues WHERE line_id = ? AND status IN ('reserved', 'called')").get(lineId);
-        if (existing) {
-            return res.status(409).json({ error: `คุณจองคิวที่ ${existing.id} ไว้แล้ว (You already have queue ${existing.id})` });
-        }
+    // Check if this lineId already has an active queue (optional but good)
+    const existing = db.prepare("SELECT * FROM queues WHERE line_id = ? AND status IN ('reserved', 'called')").get(lineId);
+    if (existing) {
+        return res.status(409).json({ error: 'คุณจองคิวอื่นไว้แล้ว (You already have a queue)' });
     }
 
-    try {
-        const update = db.prepare("UPDATE queues SET status = 'reserved', customer_name = ?, line_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?");
-        update.run(name, lineId, id);
+    const update = db.prepare("UPDATE queues SET status = 'reserved', customer_name = ?, line_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?");
+    update.run(name, lineId, id);
 
-        broadcastUpdate();
-        console.log(`Queue ${id} reserved for ${name} (${lineId})`);
-        res.json({ success: true, message: 'Reserved successfully' });
-    } catch (err) {
-        console.error('Reserve Error:', err);
-        res.status(500).json({ error: 'Internal Server Error' });
-    }
+    broadcastUpdate();
+    res.json({ success: true, message: 'Reserved successfully' });
 });
 
 // Admin: Call Queue
@@ -168,12 +156,7 @@ io.on('connection', (socket) => {
     });
 });
 
-// All other requests -> Serve Frontend (SPA Support)
-app.get('*', (req, res) => {
-    res.sendFile(path.join(__dirname, '../client/dist/index.html'));
-});
-
-const PORT = process.env.PORT || 3000; // Use env PORT for Render
+const PORT = 3000;
 server.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
 });

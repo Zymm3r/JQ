@@ -53,13 +53,3 @@ To enable real LINE notifications:
    LINE_CHANNEL_SECRET=your_secret
    ```
 4. Without this, notifications are logged to the backend console.
-
-### LINE LIFF (Auto Profile & Login)
-To enable the "One-Click Reserve" feature:
-1. Create a `LIFF` channel in LINE Developers.
-2. Set Endpoint URL to your frontend URL (e.g., https://your-ngrok-url.app).
-3. Select Scopes: `profile`, `openid`.
-4. Create a `.env` file in `client/` folder:
-   ```
-   VITE_LIFF_ID=your_liff_id_here
-   ```

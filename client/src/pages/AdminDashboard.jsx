@@ -61,26 +61,13 @@ export default function AdminDashboard() {
         }
     };
 
-    const handleLogout = () => {
-        localStorage.removeItem('admin_auth');
-        window.location.href = '/login';
-    };
-
     return (
         <div>
             <div className="app-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <h2 style={{ margin: 0 }}>แผงควบคุม (Admin)</h2>
-                <div style={{ display: 'flex', gap: '8px' }}>
-                    <button onClick={handleResetAll} className="btn-secondary" style={{ padding: '8px 16px', fontSize: '0.8rem' }}>
-                        <RefreshCw size={14} style={{ marginRight: 6 }} /> Reset All
-                    </button>
-                    <button
-                        onClick={handleLogout}
-                        style={{ padding: '8px 16px', borderRadius: '6px', border: '1px solid #ef4444', color: '#ef4444', background: 'white', cursor: 'pointer', fontSize: '0.8rem' }}
-                    >
-                        ออกจากระบบ
-                    </button>
-                </div>
+                <h2>แผงควบคุม (Admin)</h2>
+                <button onClick={handleResetAll} className="btn-secondary" style={{ padding: '8px 16px', fontSize: '0.8rem' }}>
+                    <RefreshCw size={14} style={{ marginRight: 6 }} /> Reset All
+                </button>
             </div>
 
             <div className="queue-grid">
