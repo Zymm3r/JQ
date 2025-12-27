@@ -132,7 +132,7 @@ export default function CustomerQueue() {
                             <p style={{ color: 'var(--text-light)', marginBottom: 16 }}>
                                 กรุณาเปิดลิงก์นี้ในแอป <strong>LINE</strong> <br />เพื่อระบุตัวตนและจองคิว
                             </p>
-                            <a href={`https://line.me/R/ti/p/YOUR_LINE_ID_OR_LINK`} className="btn btn-secondary" style={{ display: 'inline-block', textDecoration: 'none' }}>
+                            <a href="https://liff.line.me/2008779826-LxTz7RAT" className="btn btn-secondary" style={{ display: 'inline-block', textDecoration: 'none' }}>
                                 เปิดใน LINE
                             </a>
                         </div>
