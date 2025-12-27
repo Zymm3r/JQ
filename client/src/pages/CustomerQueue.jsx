@@ -66,16 +66,13 @@ export default function CustomerQueue() {
 
     const handleReserve = async (e) => {
         e.preventDefault();
-        // Validation: Name is required. LINE ID is optional (auto-generated if missing)
-        if (!name) return toast.error('กรุณากรอกชื่อ (Name is required)');
-
-        const finalLineId = lineId || `walk-in-${Date.now()}`; // Auto-generate if empty
+        if (!name || !lineId) return toast.error('กรุณากรอกข้อมูลให้ครบ');
 
         setSubmitting(true);
         try {
-            await api.post('/reserve', { id, name, lineId: finalLineId });
+            await api.post('/reserve', { id, name, lineId });
             toast.success('จองคิวสำเร็จ! (Reserved)');
-            localStorage.setItem('my_queue', JSON.stringify({ queueId: parseInt(id), name, lineId: finalLineId }));
+            localStorage.setItem('my_queue', JSON.stringify({ queueId: parseInt(id), name, lineId }));
         } catch (err) {
             toast.error(err.response?.data?.error || 'การจองล้มเหลว');
         } finally {
@@ -106,52 +103,59 @@ export default function CustomerQueue() {
                 </div>
 
                 <form onSubmit={handleReserve}>
-                    {/* LIFF Active State: One Click Reserve */}
-                    {lineId ? (
-                        <div style={{ textAlign: 'center', marginBottom: 24 }}>
-                            <div style={{
-                                width: 80, height: 80, borderRadius: '50%', background: '#f1f5f9',
-                                margin: '0 auto 16px', display: 'flex', alignItems: 'center', justifyContent: 'center',
-                                border: '3px solid white', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)'
-                            }}>
-                                {/* Use actual profile image if potentially available later, now default icon */}
-                                <User size={40} color="var(--primary)" />
+                    <form onSubmit={handleReserve}>
+                        {/* LIFF Connection Indicator */}
+                        {lineId && (
+                            <div style={{ marginBottom: 16, padding: 12, background: '#f0f9ff', borderRadius: 8, border: '1px solid #bae6fd' }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                    <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#0ea5e9' }} />
+                                    <span style={{ fontSize: '0.9rem', fontWeight: 500, color: '#0369a1' }}>เชื่อมต่อกับ LINE แล้ว</span>
+                                </div>
+                                <div style={{ fontSize: '0.8rem', color: '#64748b', marginTop: 4, marginLeft: 16 }}>
+                                    ดึงข้อมูลอัตโนมัติ (แก้ไขได้)
+                                </div>
                             </div>
-                            <h3 style={{ margin: '0 0 8px', color: 'var(--text-dark)' }}>สวัสดี, {name}</h3>
-                            <p style={{ margin: 0, fontSize: '0.9rem', color: 'var(--text-light)' }}>
-                                ยืนยันการจองด้วยบัญชี LINE นี้
-                            </p>
+                        )}
 
-                            <div style={{ marginTop: 24 }}>
-                                <button type="submit" className="btn btn-primary" style={{ width: '100%', padding: '16px', fontSize: '1.2rem' }} disabled={submitting}>
-                                    {submitting ? 'กำลังจอง...' : 'ยืนยันการจอง (Confirm)'}
-                                </button>
-                            </div>
+                        <div className="input-group">
+                            <label><User size={18} style={{ marginRight: 8, verticalAlign: 'text-bottom' }} />ชื่อของคุณ (Name)</label>
+                            <input
+                                type="text"
+                                placeholder="โปรดระบุ"
+                                value={name}
+                                onChange={e => setName(e.target.value)}
+                            />
                         </div>
-                    ) : (
-                        /* Fallback State: Manual Input */
-                        <>
-                            <div className="input-group">
-                                <label><User size={18} style={{ marginRight: 8, verticalAlign: 'text-bottom' }} />ชื่อของคุณ (Name)</label>
-                                <input
-                                    type="text"
-                                    placeholder="โปรดระบุ"
-                                    value={name}
-                                    onChange={e => setName(e.target.value)}
-                                />
-                            </div>
 
-                            {/* LINE ID input removed for simplicity. Auto-generated for walk-ins. */}
+                        <div className="input-group">
+                            <label><MessageCircle size={18} style={{ marginRight: 8, verticalAlign: 'text-bottom' }} />LINE ID</label>
+                            <input
+                                type="text"
+                                placeholder="โปรดระบุ"
+                                value={lineId}
+                                onChange={e => setLineId(e.target.value)}
+                            // Read-only if from LIFF to prevent breaking notification logic? 
+                            // Or allow edit? Let's allow edit but visual style.
+                            // Actually if we want notifications to work, this MUST be the UserID (Uxxxxxxxx...). 
+                            // If user changes it to "somchai", notification will fail.
+                            // Let's keep it editable but warn or just let it be. 
+                            // User request: "put line id like before".
+                            />
+                            {lineId && lineId.startsWith('U') && (
+                                <p style={{ fontSize: '0.7rem', color: '#94a3b8', marginTop: 4 }}>*LINE User ID สำหรับแจ้งเตือน</p>
+                            )}
+                        </div>
 
-                            <button type="submit" className="btn btn-primary" disabled={submitting}>
-                                {submitting ? 'กำลังบันทึก...' : 'จองคิวทันที (Reserve Now)'}
-                            </button>
+                        <button type="submit" className="btn btn-primary" disabled={submitting}>
+                            {submitting ? 'กำลังบันทึก...' : 'จองคิวทันที (Reserve Now)'}
+                        </button>
 
+                        {!lineId && (
                             <p style={{ textAlign: 'center', fontSize: '0.8rem', color: '#94a3b8', marginTop: 10 }}>
-                                *แนะนำ: เปิดใน LINE เพื่อจองง่ายๆ เพียงคลิกเดียว
+                                *เปิดใน LINE เพื่อดึงข้อมูลอัตโนมัติ
                             </p>
-                        </>
-                    )}
+                        )}
+                    </form>
                 </form>
             </div>
         );
