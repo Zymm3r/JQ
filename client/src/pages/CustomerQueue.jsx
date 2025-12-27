@@ -3,6 +3,7 @@ import { useParams } from 'react-router-dom';
 import { api, socket } from '../api';
 import toast from 'react-hot-toast';
 import { User, MessageCircle, CheckCircle, AlertCircle, Clock } from 'lucide-react';
+import liff from '@line/liff';
 
 export default function CustomerQueue() {
     const { id } = useParams();
@@ -36,6 +37,32 @@ export default function CustomerQueue() {
         socket.on('queue_updated', handleUpdate);
         return () => socket.off('queue_updated', handleUpdate);
     }, [id]);
+
+    // Initialize LIFF
+    useEffect(() => {
+        const initLiff = async () => {
+            try {
+                const liffId = import.meta.env.VITE_LIFF_ID;
+                if (!liffId) {
+                    // console.warn('LIFF ID not configured'); 
+                    return;
+                }
+
+                await liff.init({ liffId });
+                if (liff.isLoggedIn()) {
+                    const profile = await liff.getProfile();
+                    setLineId(profile.userId);
+                    // Only set name if empty (user might have typed it)
+                    setName(prev => prev || profile.displayName);
+                } else {
+                    // Optional: liff.login(); if you want to force login
+                }
+            } catch (err) {
+                console.error('LIFF Init Error:', err);
+            }
+        };
+        initLiff();
+    }, []);
 
     const handleReserve = async (e) => {
         e.preventDefault();
@@ -76,6 +103,17 @@ export default function CustomerQueue() {
                 </div>
 
                 <form onSubmit={handleReserve}>
+                    {/* LIFF Integration Section */}
+                    {lineId && (
+                        <div style={{ marginBottom: 16, padding: 12, background: '#f0f9ff', borderRadius: 8, border: '1px solid #bae6fd' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                                <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#0ea5e9' }} />
+                                <span style={{ fontSize: '0.9rem', fontWeight: 500, color: '#0369a1' }}>Logged in via LINE</span>
+                            </div>
+                            <div style={{ fontSize: '0.8rem', color: '#64748b' }}>User ID: ...{lineId.slice(-6)}</div>
+                        </div>
+                    )}
+
                     <div className="input-group">
                         <label><User size={18} style={{ marginRight: 8, verticalAlign: 'text-bottom' }} />ชื่อของคุณ (Name)</label>
                         <input
@@ -83,6 +121,7 @@ export default function CustomerQueue() {
                             placeholder="Ex. สมชาย"
                             value={name}
                             onChange={e => setName(e.target.value)}
+                            readOnly={!!lineId} // Lock name if from LINE? Or allow edit? Let's allow edit but default to profile name. Actually user might want to change it.
                         />
                     </div>
 
@@ -93,12 +132,20 @@ export default function CustomerQueue() {
                             placeholder="Ex. somchai.line"
                             value={lineId}
                             onChange={e => setLineId(e.target.value)}
+                            readOnly={!!lineId} // Lock ID if from LINE to prevent errors
+                            style={lineId ? { background: '#f1f5f9', color: '#64748b' } : {}}
                         />
                     </div>
 
                     <button type="submit" className="btn btn-primary" disabled={submitting}>
                         {submitting ? 'กำลังบันทึก...' : 'จองคิวทันที (Reserve Now)'}
                     </button>
+
+                    {!lineId && (
+                        <p style={{ textAlign: 'center', fontSize: '0.8rem', color: '#94a3b8', marginTop: 10 }}>
+                            *เปิดใน LINE เพื่อจองอัตโนมัติ
+                        </p>
+                    )}
                 </form>
             </div>
         );
