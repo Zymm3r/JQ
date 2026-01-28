@@ -1,5 +1,6 @@
 const express = require('express');
 const http = require('http');
+const path = require('path');
 const { Server } = require('socket.io');
 const cors = require('cors');
 const db = require('./database');
@@ -248,6 +249,19 @@ app.post('/api/admin/settings', (req, res) => {
         broadcastUpdate(); // Update estimates
     }
     res.json({ success: true });
+});
+
+// Serve Static Files (Frontend)
+const clientDist = path.join(__dirname, '../client/dist');
+app.use(express.static(clientDist));
+
+// Handle SPA (React Router) - Send index.html for any other requests
+// EXCLUDE /api routes
+app.get('*', (req, res) => {
+    if (req.path.startsWith('/api') || req.path.startsWith('/socket.io')) {
+        return res.status(404).json({ error: 'Not Found' });
+    }
+    res.sendFile(path.join(clientDist, 'index.html'));
 });
 
 // Socket Connection
