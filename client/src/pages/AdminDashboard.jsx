@@ -115,13 +115,14 @@ export default function AdminDashboard() {
         }
     };
 
-    const handleComplete = async (id) => {
-        if (!window.confirm(`Clear Dining Q${id}?`)) return;
+    const handleComplete = async (id, skipConfirm = false) => {
+        if (!skipConfirm && !window.confirm(`Clear Dining Q${id}?`)) return;
         try {
             await api.post('/admin/complete', { id });
-            toast.success(`Completed Q${id}`);
+            if (!skipConfirm) toast.success(`Completed Q${id}`);
         } catch (err) {
-            toast.error('Failed to complete');
+            console.error(err);
+            if (!skipConfirm) toast.error('Failed to complete');
         }
     };
 
