@@ -4,6 +4,7 @@ import { Toaster } from 'react-hot-toast';
 import CustomerQueue from './pages/CustomerQueue';
 import AdminDashboard from './pages/AdminDashboard';
 import Home from './pages/Home';
+import Monitor from './pages/Monitor';
 
 function App() {
   return (
@@ -12,6 +13,7 @@ function App() {
         <Route path="/" element={<Home />} />
         <Route path="/queue/:id" element={<CustomerQueue />} />
         <Route path="/admin" element={<AdminDashboard />} />
+        <Route path="/monitor" element={<Monitor />} />
       </Routes>
       <Toaster position="bottom-center" />
     </>

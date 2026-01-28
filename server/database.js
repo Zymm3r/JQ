@@ -5,26 +5,36 @@ const db = new Database('queue.db', { verbose: console.log });
 
 // Initialize Database
 function initDb() {
-    const schema = `
+  const schema = `
     CREATE TABLE IF NOT EXISTS queues (
-      id INTEGER PRIMARY KEY,
-      status TEXT NOT NULL DEFAULT 'available', -- available, reserved, called
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      status TEXT NOT NULL DEFAULT 'waiting', -- waiting, called, completed, cancelled
       customer_name TEXT,
       line_id TEXT,
+      phone_number TEXT,
+      pax INTEGER DEFAULT 1,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
+    CREATE TABLE IF NOT EXISTS history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        queue_id INTEGER,
+        action TEXT, -- reserved, called, completed, cancelled
+        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE IF NOT EXISTS settings (
+        key TEXT PRIMARY KEY,
+        value TEXT
+    );
   `;
-    db.exec(schema);
+  db.exec(schema);
 
-    // Seed data if empty
-    const count = db.prepare('SELECT count(*) as count FROM queues').get();
-    if (count.count === 0) {
-        const insert = db.prepare('INSERT INTO queues (id, status) VALUES (?, ?)');
-        for (let i = 1; i <= 10; i++) {
-            insert.run(i, 'available');
-        }
-        console.log('Seeded 10 queues.');
-    }
+  // Seed Default Settings
+  const settingCount = db.prepare('SELECT count(*) as count FROM settings').get();
+  if (settingCount.count === 0) {
+    db.prepare("INSERT INTO settings (key, value) VALUES ('avg_time', '30')").run();
+    console.log('Seeded default settings.');
+  }
 }
 
 initDb();
