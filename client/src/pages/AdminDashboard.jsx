@@ -157,10 +157,43 @@ export default function AdminDashboard() {
         }
     };
 
+    // Auto-check queues (Dining > 2hr -> Complete, Waiting > 1hr -> Call)
+    useEffect(() => {
+        if (!isAuthenticated) return;
+        const interval = setInterval(() => {
+            queues.forEach(q => {
+                // Check Dining (2 Hours)
+                if (q.status === 'dining' && q.start_time) {
+                    const startTime = new Date(q.start_time.endsWith('Z') ? q.start_time : (q.start_time + 'Z')).getTime();
+                    if ((now.getTime() - startTime) > (2 * 60 * 60 * 1000)) {
+                        handleComplete(q.id, true);
+                    }
+                }
+
+                // Check Waiting (1 Hour) created_at
+                if (q.status === 'waiting' && q.created_at) {
+                    // created_at is default current_timestamp in DB (UTC)
+                    const createTime = new Date(q.created_at.endsWith('Z') ? q.created_at : (q.created_at + 'Z')).getTime();
+                    if ((now.getTime() - createTime) > (1 * 60 * 60 * 1000)) {
+                        // Call only if waiting > 1 hr
+                        console.log("Auto-calling queue", q.id);
+                        handleCall(q.id);
+                    }
+                }
+            });
+        }, 30000); // Check every 30s
+        return () => clearInterval(interval);
+    }, [queues, isAuthenticated, now]);
+
     const getDiningTime = (startTime) => {
         if (!startTime) return '00:00';
-        const start = new Date(startTime).getTime();
+        // Database stores as UTC string "YYYY-MM-DD HH:MM:SS"
+        // We append "Z" to force browser to interpret as UTC
+        const start = new Date(startTime.endsWith('Z') ? startTime : (startTime + 'Z')).getTime();
         const diff = now.getTime() - start;
+
+        // Prevent negative time
+        if (diff < 0) return '00:00';
 
         // Format as HH:MM:SS
         const hours = Math.floor(diff / 3600000);
@@ -172,7 +205,7 @@ export default function AdminDashboard() {
 
     const isOverLimit = (startTime) => {
         if (!startTime) return false;
-        const start = new Date(startTime).getTime();
+        const start = new Date(startTime.endsWith('Z') ? startTime : (startTime + 'Z')).getTime();
         return (now.getTime() - start) > (2 * 60 * 60 * 1000); // 2 Hours
     };
 
