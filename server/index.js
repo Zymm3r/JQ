@@ -7,6 +7,15 @@ const db = require('./database');
 const { pushMessage, client: lineClient } = require('./lineService');
 const line = require('@line/bot-sdk');
 
+// Auto-run migrations on start
+try {
+    require('./database_migrate');
+    require('./database_migrate_timeslot');
+    console.log('Database migrations executed.');
+} catch (err) {
+    console.error('Migration execution failed:', err);
+}
+
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
