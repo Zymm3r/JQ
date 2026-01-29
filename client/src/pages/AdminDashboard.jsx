@@ -10,6 +10,7 @@ export default function AdminDashboard() {
     const [stats, setStats] = useState({ total: 0, completed: 0, cancelled: 0, waiting: 0 });
     const [showSettings, setShowSettings] = useState(false);
     const [avgTime, setAvgTime] = useState(30);
+    const [avgWaitTime, setAvgWaitTime] = useState(10); // Standard wait buffer
     const [now, setNow] = useState(new Date());
 
     useEffect(() => {
@@ -149,7 +150,7 @@ export default function AdminDashboard() {
 
     const saveSettings = async () => {
         try {
-            await api.post('/admin/settings', { avgTime });
+            await api.post('/admin/settings', { avgTime, avgWaitTime });
             toast.success('Settings Saved');
             setShowSettings(false);
         } catch (err) {
@@ -244,6 +245,13 @@ export default function AdminDashboard() {
                                 type="number"
                                 value={avgTime}
                                 onChange={e => setAvgTime(e.target.value)}
+                                style={{ width: 80, padding: 5 }}
+                            />
+                            <label style={{ marginLeft: 15 }}>Avg Wait (mins):</label>
+                            <input
+                                type="number"
+                                value={avgWaitTime}
+                                onChange={e => setAvgWaitTime(e.target.value)}
                                 style={{ width: 80, padding: 5 }}
                             />
                             <button onClick={saveSettings} className="btn-primary" style={{ padding: '5px 15px' }}>Save</button>

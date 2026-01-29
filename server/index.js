@@ -252,11 +252,14 @@ app.get('/api/admin/stats', (req, res) => {
 
 // Admin: Update Settings
 app.post('/api/admin/settings', (req, res) => {
-    const { avgTime } = req.body;
+    const { avgTime, avgWaitTime } = req.body;
     if (avgTime) {
         db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('avg_time', ?)").run(String(avgTime));
-        broadcastUpdate(); // Update estimates
     }
+    if (avgWaitTime) {
+        db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('avg_wait_time', ?)").run(String(avgWaitTime));
+    }
+    broadcastUpdate(); // Update estimates
     res.json({ success: true });
 });
 
