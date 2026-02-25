@@ -68,9 +68,7 @@ async function broadcastUpdate() {
     // Return only active queues (waiting, called, dining)
     const queues = await Queue.find({ status: { $in: ['waiting', 'called', 'dining'] } }).sort({ _id: 1 }).lean();
     queues.forEach(q => {
-        q.id = q._id.toString();
-        // Fallback for older entries without queueNumber
-        if (q.queueNumber === undefined) q.queueNumber = q.id;
+        q.id = q.queueNumber !== undefined ? q.queueNumber : q._id.toString();
     });
 
     // Calculate Wait Time Estimate
@@ -105,9 +103,7 @@ async function broadcastUpdate() {
 app.get('/api/queues', async (req, res) => {
     const queues = await Queue.find({ status: { $in: ['waiting', 'called', 'dining'] } }).sort({ _id: 1 }).lean();
     queues.forEach(q => {
-        q.id = q._id.toString();
-        // Fallback for older entries without queueNumber
-        if (q.queueNumber === undefined) q.queueNumber = q.id;
+        q.id = q.queueNumber !== undefined ? q.queueNumber : q._id.toString();
     });
 
     // Re-calculate times (duplicate logic, should refactor but fine for now)
@@ -130,9 +126,11 @@ app.get('/api/queues', async (req, res) => {
 // Get single queue status
 app.get('/api/queues/:id', async (req, res) => {
     try {
-        const queue = await Queue.findById(req.params.id).lean();
+        const id = req.params.id;
+        const query = mongoose.Types.ObjectId.isValid(id) ? { _id: id } : { queueNumber: Number(id) };
+        const queue = await Queue.findOne(query).lean();
         if (!queue) return res.status(404).json({ error: 'Queue not found' });
-        queue.id = queue._id.toString();
+        queue.id = queue.queueNumber !== undefined ? queue.queueNumber : queue._id.toString();
 
         // Calculate position
         if (queue.status === 'waiting') {
@@ -159,7 +157,8 @@ app.post('/api/reserve', async (req, res) => {
     if (lineId) {
         const existing = await Queue.findOne({ line_id: lineId, status: { $in: ['waiting', 'called', 'dining'] } }).lean();
         if (existing) {
-            return res.status(409).json({ error: 'คุณมีคิวอยู่แล้ว (You already have a queue)', queueId: existing._id.toString() });
+            const displayId = existing.queueNumber !== undefined ? existing.queueNumber : existing._id.toString();
+            return res.status(409).json({ error: 'คุณมีคิวอยู่แล้ว (You already have a queue)', queueId: displayId });
         }
     }
 
@@ -183,7 +182,8 @@ app.post('/api/reserve', async (req, res) => {
         });
 
         broadcastUpdate();
-        res.json({ success: true, id: newQueue._id.toString(), queueNumber: newQueue.queueNumber });
+        const outputId = newQueue.queueNumber !== undefined ? newQueue.queueNumber : newQueue._id.toString();
+        res.json({ success: true, id: outputId, queueNumber: newQueue.queueNumber });
     } catch (err) {
         console.error('Error in /api/reserve:', err);
         res.status(500).json({ error: 'Internal Server Error', details: err.message });
@@ -194,7 +194,8 @@ app.post('/api/reserve', async (req, res) => {
 app.post('/api/cancel', async (req, res) => {
     try {
         const { id, lineId } = req.body;
-        const queue = await Queue.findById(id);
+        const query = mongoose.Types.ObjectId.isValid(id) ? { _id: id } : { queueNumber: Number(id) };
+        const queue = await Queue.findOne(query);
 
         if (!queue) return res.status(404).json({ error: 'Queue not found' });
 
@@ -219,7 +220,8 @@ app.post('/api/cancel', async (req, res) => {
 app.post('/api/admin/call', async (req, res) => {
     try {
         const { id } = req.body;
-        const queue = await Queue.findById(id);
+        const query = mongoose.Types.ObjectId.isValid(id) ? { _id: id } : { queueNumber: Number(id) };
+        const queue = await Queue.findOne(query);
 
         if (!queue) return res.status(404).json({ error: 'Queue not found' });
 
@@ -244,7 +246,8 @@ app.post('/api/admin/call', async (req, res) => {
 app.post('/api/admin/seat', async (req, res) => {
     try {
         const { id } = req.body;
-        const queue = await Queue.findById(id);
+        const query = mongoose.Types.ObjectId.isValid(id) ? { _id: id } : { queueNumber: Number(id) };
+        const queue = await Queue.findOne(query);
         if (!queue) return res.status(404).json({ error: 'Queue not found' });
 
         queue.status = 'dining';
@@ -263,7 +266,8 @@ app.post('/api/admin/seat', async (req, res) => {
 app.post('/api/admin/complete', async (req, res) => {
     try {
         const { id } = req.body;
-        const queue = await Queue.findById(id);
+        const query = mongoose.Types.ObjectId.isValid(id) ? { _id: id } : { queueNumber: Number(id) };
+        const queue = await Queue.findOne(query);
         if (!queue) return res.status(404).json({ error: 'Queue not found' });
 
         queue.status = 'completed';
@@ -332,9 +336,7 @@ io.on('connection', async (socket) => {
     try {
         const queues = await Queue.find({ status: { $in: ['waiting', 'called', 'dining'] } }).sort({ _id: 1 }).lean();
         queues.forEach(q => {
-            q.id = q._id.toString();
-            // Fallback for older entries without queueNumber
-            if (q.queueNumber === undefined) q.queueNumber = q.id;
+            q.id = q.queueNumber !== undefined ? q.queueNumber : q._id.toString();
         });
         socket.emit('queue_updated', queues);
     } catch (error) {
