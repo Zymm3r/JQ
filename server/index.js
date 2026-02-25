@@ -1,17 +1,19 @@
+// server/index.js
 const express = require('express');
 const http = require('http');
 const path = require('path');
 const { Server } = require('socket.io');
 const cors = require('cors');
 const mongoose = require('mongoose');
+const cron = require('node-cron');
+const line = require('@line/bot-sdk');
 
 const Queue = require('./models/Queue');
 const Setting = require('./models/Setting');
 const Counter = require('./models/Counter');
-require('./database'); // Initialize DB seeding
+require('dotenv').config();
 
 const { pushMessage, client: lineClient } = require('./lineService');
-const line = require('@line/bot-sdk');
 
 mongoose.connect(process.env.MONGO_URI)
     .then(() => console.log('Mongoose connected successfully.'))
@@ -20,10 +22,7 @@ mongoose.connect(process.env.MONGO_URI)
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
-    cors: {
-        origin: "*", // Allow all for dev
-        methods: ["GET", "POST"]
-    }
+    cors: { origin: "*", methods: ["GET", "POST"] }
 });
 
 app.use(cors());
@@ -34,7 +33,6 @@ const lineConfig = {
     channelSecret: process.env.LINE_CHANNEL_SECRET,
 };
 
-// Webhook Route
 app.post('/webhook', line.middleware(lineConfig), (req, res) => {
     Promise.all(req.body.events.map(handleEvent))
         .then((result) => res.json(result))
@@ -44,16 +42,12 @@ app.post('/webhook', line.middleware(lineConfig), (req, res) => {
         });
 });
 
-// Event Handler
 function handleEvent(event) {
     if (event.type !== 'message' || event.message.type !== 'text') {
         return Promise.resolve(null);
     }
-
-    // Reply with User ID
     const userId = event.source.userId;
     const replyText = `สวัสดีครับ! นี่คือ ID ของคุณ:\n\n${userId}\n\n(กดคัดลอก แล้วนำไปใส่ในช่องจองคิวได้เลยครับ)`;
-
     return lineClient.replyMessage(event.replyToken, {
         type: 'text',
         text: replyText
@@ -63,32 +57,33 @@ function handleEvent(event) {
 // --- Body Parser for other routes ---
 app.use(express.json());
 
+// Helper to get today's active scope safely (Server TZ or UTC+7)
+const getActiveDateKey = () => {
+    const tzOffset = 7 * 60 * 60000;
+    return new Date(Date.now() + tzOffset).toISOString().split('T')[0];
+};
+
 // Helper: Broadcast update
 async function broadcastUpdate() {
-    // Return only active queues (waiting, called, dining)
-    const queues = await Queue.find({ status: { $in: ['waiting', 'called', 'dining'] } }).sort({ _id: 1 }).lean();
-    queues.forEach(q => {
-        q.id = q.queueNumber !== undefined ? q.queueNumber : q._id.toString();
-    });
+    const today = getActiveDateKey();
+    const queues = await Queue.find({
+        dateKey: today,
+        status: { $in: ['waiting', 'calling', 'dining'] }
+    }).sort({ queueNumber: 1 }).lean();
 
     // Calculate Wait Time Estimate
-    const avgTimeSetting = await Setting.findOne({ key: 'avg_time' }).lean();
-    const avgTime = parseInt(avgTimeSetting?.value || 30);
-
-    // Simple Heuristic: 
-    // We assume 1 table clears every (AvgTime / TotalTables) minutes.
-    // Let's assume we have 10 tables for now (fixed constant).
+    const settings = await Setting.findOne() || new Setting();
+    const avgTimeMins = settings.avgTimePerTableMins || 60;
     const TOTAL_TABLES = 10;
-    const timePerTable = avgTime / TOTAL_TABLES;
+    const timePerTable = avgTimeMins / TOTAL_TABLES;
 
-    // Add estimated wait time to each queue
     let waitingCount = 0;
     const queuesWithTime = queues.map(q => {
-        if (q.status === 'called' || q.status === 'dining') {
+        q.id = q.queueNumber;
+
+        if (q.status === 'calling' || q.status === 'dining') {
             return { ...q, estimatedWaitTime: 0 };
         }
-        // For waiting queues
-        // Wait time = (My Position in Waiting List) * TimePerTable
         const waitMins = Math.ceil((waitingCount + 1) * timePerTable);
         waitingCount++;
         return { ...q, estimatedWaitTime: waitMins };
@@ -97,284 +92,323 @@ async function broadcastUpdate() {
     io.emit('queue_updated', queuesWithTime);
 }
 
-// --- API Routes ---
+// ==========================================
+// API ROUTES
+// ==========================================
 
 // Get active queues
-app.get('/api/queues', async (req, res) => {
-    const queues = await Queue.find({ status: { $in: ['waiting', 'called', 'dining'] } }).sort({ _id: 1 }).lean();
-    queues.forEach(q => {
-        q.id = q.queueNumber !== undefined ? q.queueNumber : q._id.toString();
-    });
+app.get('/api/queues', async (req, res, next) => {
+    try {
+        const today = getActiveDateKey();
+        const queues = await Queue.find({
+            dateKey: today,
+            status: { $in: ['waiting', 'calling', 'dining'] }
+        }).sort({ queueNumber: 1 }).lean();
 
-    // Re-calculate times (duplicate logic, should refactor but fine for now)
-    const avgTimeSetting = await Setting.findOne({ key: 'avg_time' }).lean();
-    const avgTime = parseInt(avgTimeSetting?.value || 30);
-    const TOTAL_TABLES = 10;
-    const timePerTable = avgTime / TOTAL_TABLES;
+        const settings = await Setting.findOne() || new Setting();
+        const avgTimeMins = settings.avgTimePerTableMins || 60;
+        const TOTAL_TABLES = 10;
+        const timePerTable = avgTimeMins / TOTAL_TABLES;
 
-    let waitingCount = 0;
-    const queuesWithTime = queues.map(q => {
-        if (q.status === 'called' || q.status === 'dining') return { ...q, estimatedWaitTime: 0 };
-        const waitMins = Math.ceil((waitingCount + 1) * timePerTable);
-        waitingCount++;
-        return { ...q, estimatedWaitTime: waitMins };
-    });
+        let waitingCount = 0;
+        const queuesWithTime = queues.map(q => {
+            q.id = q.queueNumber;
+            if (q.status === 'calling' || q.status === 'dining') return { ...q, estimatedWaitTime: 0 };
+            const waitMins = Math.ceil((waitingCount + 1) * timePerTable);
+            waitingCount++;
+            return { ...q, estimatedWaitTime: waitMins };
+        });
 
-    res.json(queuesWithTime);
+        res.json(queuesWithTime);
+    } catch (err) { next(err); }
 });
 
 // Get single queue status
-app.get('/api/queues/:id', async (req, res) => {
+app.get('/api/queues/:id', async (req, res, next) => {
     try {
-        const id = String(req.params.id);
-        const isObjectId = /^[0-9a-fA-F]{24}$/.test(id);
-        const numId = Number(id);
-        const query = isObjectId ? { _id: id } : (!isNaN(numId) ? { queueNumber: numId } : null);
-        if (!query) return res.status(400).json({ error: 'Invalid ID format' });
-        const queue = await Queue.findOne(query).lean();
-        if (!queue) return res.status(404).json({ error: 'Queue not found' });
-        queue.id = queue.queueNumber !== undefined ? queue.queueNumber : queue._id.toString();
+        const queueNum = parseInt(req.params.id, 10);
+        if (isNaN(queueNum)) {
+            const error = new Error('BAD_REQUEST');
+            error.status = 400;
+            throw error;
+        }
 
-        // Calculate position - We must refine this condition to include todays scope
+        const dateKey = getActiveDateKey();
+        const queue = await Queue.findOne({ dateKey, queueNumber: queueNum }).lean();
+        if (!queue) {
+            const error = new Error('NOT_FOUND');
+            error.status = 404;
+            throw error;
+        }
+
+        queue.id = queue.queueNumber;
+
+        // Calculate position
         if (queue.status === 'waiting') {
-            const startOfToday = new Date();
-            startOfToday.setHours(0, 0, 0, 0);
-
-            const position = await Queue.countDocuments({ status: 'waiting', created_at: { $gte: startOfToday, $lt: queue.created_at } });
-            const avgTimeSetting = await Setting.findOne({ key: 'avg_time' }).lean();
-            const avgTime = parseInt(avgTimeSetting?.value || 30);
-            const timePerTable = avgTime / 10;
+            const position = await Queue.countDocuments({
+                dateKey,
+                status: 'waiting',
+                queueNumber: { $lt: queue.queueNumber }
+            });
+            const settings = await Setting.findOne() || new Setting();
+            const timePerTable = (settings.avgTimePerTableMins || 60) / 10;
             queue.estimatedWaitTime = Math.ceil((position + 1) * timePerTable);
             queue.queueAhead = position;
         }
 
         res.json(queue);
-    } catch (err) {
-        res.status(400).json({ error: 'Invalid ID' });
-    }
+    } catch (err) { next(err); }
 });
 
-// Reserve Queue (New Dynamic)
-app.post('/api/reserve', async (req, res) => {
-    const { name, lineId, pax, phone, timeSlot } = req.body;
-    if (!name) return res.status(400).json({ error: 'Name is required' });
-
-    // Check if Line ID already has active queue
-    if (lineId) {
-        const existing = await Queue.findOne({ line_id: lineId, status: { $in: ['waiting', 'called', 'dining'] } }).lean();
-        if (existing) {
-            const displayId = existing.queueNumber !== undefined ? existing.queueNumber : existing._id.toString();
-            return res.status(409).json({ error: 'คุณมีคิวอยู่แล้ว (You already have a queue)', queueId: displayId });
-        }
-    }
-
+// Reserve Queue
+app.post('/api/reserve', async (req, res, next) => {
     try {
-        let setting = await Setting.findOne({ key: 'active_day' }).lean();
-        let activeDay = setting ? setting.value : null;
-        if (!activeDay) {
-            const localDate = new Date(Date.now() + 7 * 60 * 60000);
-            activeDay = localDate.toISOString().split('T')[0];
-            await Setting.updateOne({ key: 'active_day' }, { value: activeDay }, { upsert: true });
+        const { name, lineId, pax, phone, timeSlot } = req.body;
+        if (!name) {
+            const error = new Error('Name is required');
+            error.status = 400;
+            throw error;
         }
 
-        const counterKey = `queueNumber-${activeDay}`;
+        const dateKey = getActiveDateKey();
 
-        // Atomic queue number increment specifically per day cycle
-        const counter = await Counter.findByIdAndUpdate(
-            { _id: counterKey },
+        // Check if Line ID already has active queue today
+        if (lineId) {
+            const existing = await Queue.findOne({
+                dateKey,
+                line_id: lineId,
+                status: { $in: ['waiting', 'calling', 'dining'] }
+            }).lean();
+            if (existing) {
+                return res.status(409).json({
+                    error: 'คุณมีคิวอยู่แล้ว (You already have a queue)',
+                    queueId: existing.queueNumber
+                });
+            }
+        }
+
+        const counterName = `queueNumber-${dateKey}`;
+
+        // ATOMIC INCREMENT
+        const counter = await Counter.findOneAndUpdate(
+            { name: counterName },
             { $inc: { seq: 1 } },
             { new: true, upsert: true }
         );
 
         const newQueue = await Queue.create({
+            dateKey,
             queueNumber: counter.seq,
             customer_name: name,
             line_id: lineId || null,
             phone_number: phone || null,
             pax: pax || 1,
             time_slot: timeSlot || null,
-            status: 'waiting',
-            history: [{ action: 'reserved' }]
+            status: 'waiting'
         });
 
         broadcastUpdate();
-        const outputId = newQueue.queueNumber !== undefined ? newQueue.queueNumber : newQueue._id.toString();
-        res.json({ success: true, id: outputId, queueNumber: newQueue.queueNumber });
+        res.status(201).json({ success: true, id: newQueue.queueNumber, queueNumber: newQueue.queueNumber });
     } catch (err) {
-        console.error('Error in /api/reserve:', err);
-        res.status(500).json({ error: 'Internal Server Error', details: err.message });
+        next(err);
     }
 });
 
-// Cancel Queue (Customer)
-app.post('/api/cancel', async (req, res) => {
-    try {
-        const { id, lineId } = req.body;
-        const strId = String(id);
-        const isObjectId = /^[0-9a-fA-F]{24}$/.test(strId);
-        const numId = Number(id);
-        const query = isObjectId ? { _id: strId } : (!isNaN(numId) ? { queueNumber: numId } : null);
-        if (!query) return res.status(400).json({ error: 'Invalid ID format' });
-        const queue = await Queue.findOne(query);
+// GENERIC QUEUE ACTION PROCESSOR
+const processQueueAction = async (queueNumber, fromStatuses, targetStatus, timeField) => {
+    const dateKey = getActiveDateKey();
+    const queueNum = parseInt(queueNumber, 10);
 
-        if (!queue) return res.status(404).json({ error: 'Queue not found' });
-
-        // Verify ownership if lineId passed (optional security)
-        if (lineId && queue.line_id !== lineId) {
-            return res.status(403).json({ error: 'Unauthorized' });
-        }
-
-        queue.status = 'cancelled';
-        queue.history.push({ action: 'cancelled' });
-        await queue.save();
-
-        broadcastUpdate();
-        res.json({ success: true });
-    } catch (err) {
-        console.error('Error in /api/cancel:', err);
-        res.status(500).json({ error: 'Internal Server Error' });
+    if (isNaN(queueNum)) {
+        const error = new Error('BAD_REQUEST');
+        error.status = 400;
+        throw error;
     }
-});
+
+    const updatedQueue = await Queue.findOneAndUpdate(
+        { dateKey, queueNumber: queueNum, status: { $in: fromStatuses } },
+        {
+            $set: {
+                status: targetStatus,
+                [timeField]: new Date(),
+                manualAction: true
+            }
+        },
+        { new: true }
+    );
+
+    if (!updatedQueue) {
+        const error = new Error('NOT_FOUND');
+        error.status = 404;
+        throw error;
+    }
+
+    return updatedQueue;
+};
 
 // Admin: Call Queue
-app.post('/api/admin/call', async (req, res) => {
+app.post('/api/admin/call', async (req, res, next) => {
     try {
         const { id } = req.body;
-        const strId = String(id);
-        const isObjectId = /^[0-9a-fA-F]{24}$/.test(strId);
-        const numId = Number(id);
-        const query = isObjectId ? { _id: strId } : (!isNaN(numId) ? { queueNumber: numId } : null);
-        if (!query) return res.status(400).json({ error: 'Invalid ID format' });
-        const queue = await Queue.findOne(query);
-
-        if (!queue) return res.status(404).json({ error: 'Queue not found' });
-
-        queue.status = 'called';
-        queue.history.push({ action: 'called' });
-        await queue.save();
+        const queue = await processQueueAction(id, ['waiting'], 'calling', 'calledAt');
 
         // Send LINE
         if (queue.line_id) {
-            const displayId = queue.queueNumber !== undefined ? queue.queueNumber : queue._id.toString();
+            const displayId = queue.queueNumber;
             const msg = `ถึงคิวของคุณแล้ว! (คิวที่ ${displayId})\nกรุณามาที่หน้าร้านได้เลยครับ\n\nYour queue (${displayId}) is ready!`;
             await pushMessage(queue.line_id, msg);
         }
 
         broadcastUpdate();
-        res.json({ success: true });
-    } catch (err) {
-        res.status(500).json({ error: 'Internal Server Error' });
-    }
+        res.json({ success: true, queue });
+    } catch (err) { next(err); }
 });
 
-// Admin: Seat Customer (Start Timer)
-app.post('/api/admin/seat', async (req, res) => {
+// Admin: Seat Customer
+app.post('/api/admin/seat', async (req, res, next) => {
     try {
         const { id } = req.body;
-        const strId = String(id);
-        const isObjectId = /^[0-9a-fA-F]{24}$/.test(strId);
-        const numId = Number(id);
-        const query = isObjectId ? { _id: strId } : (!isNaN(numId) ? { queueNumber: numId } : null);
-        if (!query) return res.status(400).json({ error: 'Invalid ID format' });
-        const queue = await Queue.findOne(query);
-        if (!queue) return res.status(404).json({ error: 'Queue not found' });
-
-        queue.status = 'dining';
-        queue.start_time = new Date();
-        queue.history.push({ action: 'seated' });
-        await queue.save();
+        await processQueueAction(id, ['waiting', 'calling'], 'dining', 'diningAt');
 
         broadcastUpdate();
         res.json({ success: true });
-    } catch (err) {
-        res.status(500).json({ error: 'Internal Server Error' });
-    }
+    } catch (err) { next(err); }
 });
 
-// Admin: Complete Queue (Was Clear)
-app.post('/api/admin/complete', async (req, res) => {
+// Admin: Complete Queue
+app.post('/api/admin/complete', async (req, res, next) => {
     try {
         const { id } = req.body;
-        const strId = String(id);
-        const isObjectId = /^[0-9a-fA-F]{24}$/.test(strId);
-        const numId = Number(id);
-        const query = isObjectId ? { _id: strId } : (!isNaN(numId) ? { queueNumber: numId } : null);
-        if (!query) return res.status(400).json({ error: 'Invalid ID format' });
-        const queue = await Queue.findOne(query);
-        if (!queue) return res.status(404).json({ error: 'Queue not found' });
-
-        queue.status = 'completed';
-        queue.end_time = new Date();
-        queue.history.push({ action: 'completed' });
-        await queue.save();
+        await processQueueAction(id, ['calling', 'dining'], 'completed', 'completedAt');
 
         broadcastUpdate();
         res.json({ success: true });
-    } catch (err) {
-        res.status(500).json({ error: 'Internal Server Error' });
-    }
+    } catch (err) { next(err); }
+});
+
+// Customer & Admin: Cancel Route
+app.post('/api/cancel', async (req, res, next) => {
+    try {
+        const { id, lineId } = req.body;
+        const dateKey = getActiveDateKey();
+        const queueNum = parseInt(id, 10);
+
+        if (isNaN(queueNum)) {
+            const err = new Error('BAD_REQUEST');
+            err.status = 400;
+            throw err;
+        }
+
+        const queue = await Queue.findOne({ dateKey, queueNumber: queueNum });
+        if (!queue) {
+            const err = new Error('NOT_FOUND');
+            err.status = 404;
+            throw err;
+        }
+
+        // Verify ownership if lineId passed
+        if (lineId && queue.line_id !== lineId) {
+            const err = new Error('Unauthorized');
+            err.status = 403;
+            throw err;
+        }
+
+        // It is perfectly safe to cancel no matter status up until completed
+        if (queue.status !== 'completed' && queue.status !== 'cancelled') {
+            queue.status = 'cancelled';
+            queue.cancelledAt = new Date();
+            queue.manualAction = true;
+            await queue.save();
+        }
+
+        broadcastUpdate();
+        res.json({ success: true });
+    } catch (err) { next(err); }
 });
 
 // Admin: Reset (End of Day/Store Closure)
-app.post('/api/admin/reset', async (req, res) => {
+app.post('/api/admin/reset', async (req, res, next) => {
     try {
-        // Safely map and save to execute mongoose subdocument constraints robustly instead of updateMany bulk which bugs easily
-        const activeQueues = await Queue.find({ status: { $in: ['waiting', 'called', 'dining'] } });
-        for (const q of activeQueues) {
-            q.status = 'cancelled';
-            q.history.push({ action: 'cancelled' });
-            await q.save();
-        }
-
-        // Cycle the active key uniquely to hard-reset sequence numbering safely to 1
-        const nextKey = new Date().getTime().toString();
-        await Setting.updateOne({ key: 'active_day' }, { value: nextKey }, { upsert: true });
+        const dateKey = getActiveDateKey();
+        // Archive all active queues for today smoothly
+        await Queue.updateMany(
+            { dateKey, status: { $in: ['waiting', 'calling', 'dining'] } },
+            {
+                $set: {
+                    status: 'cancelled',
+                    cancelledAt: new Date(),
+                    manualAction: true
+                }
+            }
+        );
 
         broadcastUpdate();
-        res.json({ success: true });
-    } catch (err) {
-        console.error('Error in /api/admin/reset:', err);
-        res.status(500).json({ error: 'Internal Server Error' });
-    }
+        res.json({ success: true, message: "Queues archived. Ready for new day." });
+    } catch (err) { next(err); }
 });
 
 // Admin: Get Stats
-app.get('/api/admin/stats', async (req, res) => {
+app.get('/api/admin/stats', async (req, res, next) => {
     try {
-        const startOfToday = new Date();
-        startOfToday.setHours(0, 0, 0, 0);
+        const dateKey = getActiveDateKey();
 
-        const total = await Queue.countDocuments({ created_at: { $gte: startOfToday } });
-        const completed = await Queue.countDocuments({ status: 'completed', created_at: { $gte: startOfToday } });
-        const cancelled = await Queue.countDocuments({ status: 'cancelled', created_at: { $gte: startOfToday } });
-        const waiting = await Queue.countDocuments({ status: 'waiting' });
+        const total = await Queue.countDocuments({ dateKey });
+        const completed = await Queue.countDocuments({ dateKey, status: 'completed' });
+        const cancelled = await Queue.countDocuments({ dateKey, status: 'cancelled' });
+        const waiting = await Queue.countDocuments({ dateKey, status: 'waiting' });
 
         res.json({ total, completed, cancelled, waiting });
-    } catch (err) {
-        console.error('Error in /api/admin/stats:', err);
-        res.status(500).json({ error: 'Internal Server Error' });
-    }
+    } catch (err) { next(err); }
+});
+
+// Admin: Settings Data (If requested directly)
+app.get('/api/admin/settings', async (req, res, next) => {
+    try {
+        const settings = await Setting.findOne() || new Setting();
+        res.json(settings);
+    } catch (err) { next(err); }
 });
 
 // Admin: Update Settings
-app.post('/api/admin/settings', async (req, res) => {
-    const { avgTime, avgWaitTime } = req.body;
-    if (avgTime) {
-        await Setting.updateOne({ key: 'avg_time' }, { value: String(avgTime) }, { upsert: true });
+app.post('/api/admin/settings', async (req, res, next) => {
+    try {
+        const { avgTime, avgWaitTime } = req.body;
+        let setUpdate = {};
+        if (avgTime) setUpdate.avgTimePerTableMins = Number(avgTime);
+        if (avgWaitTime) setUpdate.avgWaitMins = Number(avgWaitTime);
+
+        await Setting.findOneAndUpdate(
+            {},
+            { $set: setUpdate },
+            { upsert: true, new: true }
+        );
+
+        broadcastUpdate();
+        res.json({ success: true });
+    } catch (err) { next(err); }
+});
+
+// Global Error Middleware
+app.use((err, req, res, next) => {
+    console.error(`[Error] ${req.method} ${req.originalUrl}:`, err.message || err);
+
+    if (err.status) {
+        return res.status(err.status).json({ error: err.message });
     }
-    if (avgWaitTime) {
-        await Setting.updateOne({ key: 'avg_wait_time' }, { value: String(avgWaitTime) }, { upsert: true });
+    if (err.code === 11000) {
+        return res.status(409).json({ error: 'Conflict. Duplicate key detected.' });
     }
-    broadcastUpdate(); // Update estimates
-    res.json({ success: true });
+    if (err.name === 'ValidationError') {
+        return res.status(400).json({ error: err.message });
+    }
+    res.status(500).json({ error: 'Internal Server Error' });
 });
 
 // Serve Static Files (Frontend)
 const clientDist = path.join(__dirname, '../client/dist');
 app.use(express.static(clientDist));
 
-// Handle SPA (React Router) - Send index.html for any other requests
-// EXCLUDE /api routes
+// Handle SPA (React Router) - EXCLUDE /api routes
 app.get('*', (req, res) => {
     if (req.path.startsWith('/api') || req.path.startsWith('/socket.io')) {
         return res.status(404).json({ error: 'Not Found' });
@@ -385,22 +419,55 @@ app.get('*', (req, res) => {
 // Socket Connection
 io.on('connection', async (socket) => {
     console.log('Client connected');
-    // Trigger an update just for this client (hacky but works to reuse logic)
-    // Ideally we extract the logic to 'getQueuesData()' and emit that.
-
-    // Send initial state manually
     try {
-        const queues = await Queue.find({ status: { $in: ['waiting', 'called', 'dining'] } }).sort({ _id: 1 }).lean();
-        queues.forEach(q => {
-            q.id = q.queueNumber !== undefined ? q.queueNumber : q._id.toString();
-        });
+        const today = getActiveDateKey();
+        const queues = await Queue.find({
+            dateKey: today,
+            status: { $in: ['waiting', 'calling', 'dining'] }
+        }).sort({ queueNumber: 1 }).lean();
+
+        queues.forEach(q => { q.id = q.queueNumber; });
         socket.emit('queue_updated', queues);
     } catch (error) {
         console.error('Socket init error:', error);
     }
 });
 
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
+
+    // START CRON SCHEDULER
+    cron.schedule('*/60 * * * * *', async () => {
+        try {
+            const settings = await Setting.findOne() || new Setting();
+            const now = new Date();
+            const today = getActiveDateKey();
+
+            const waitMins = settings.avgWaitMins || 15;
+            const dineMins = settings.avgTimePerTableMins || 60;
+
+            const callThreshold = new Date(now.getTime() - (waitMins * 60000));
+            const completeThreshold = new Date(now.getTime() - (dineMins * 60000));
+
+            // Auto-Call: waiting -> calling
+            const callResult = await Queue.updateMany(
+                { dateKey: today, status: 'waiting', createdAt: { $lte: callThreshold }, manualAction: false },
+                { $set: { status: 'calling', calledAt: now } }
+            );
+
+            // Auto-Complete: dining -> completed
+            const completeResult = await Queue.updateMany(
+                { dateKey: today, status: 'dining', diningAt: { $lte: completeThreshold }, manualAction: false },
+                { $set: { status: 'completed', completedAt: now } }
+            );
+
+            if (callResult.modifiedCount > 0 || completeResult.modifiedCount > 0) {
+                console.log(`[Cron] Executed. Auto-Called: ${callResult.modifiedCount} | Auto-Completed: ${completeResult.modifiedCount}`);
+                broadcastUpdate();
+            }
+        } catch (err) {
+            console.error('[CRON Error] Failed to execute queue automation:', err);
+        }
+    });
 });

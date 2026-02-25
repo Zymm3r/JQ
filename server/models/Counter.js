@@ -1,10 +1,9 @@
+// models/Counter.js
 const mongoose = require('mongoose');
 
 const counterSchema = new mongoose.Schema({
-    _id: { type: String, required: true },
+    name: { type: String, required: true, unique: true }, // e.g., 'queueNumber-2026-02-26'
     seq: { type: Number, default: 0 }
 });
 
-const Counter = mongoose.model('Counter', counterSchema);
-
-module.exports = Counter;
+module.exports = mongoose.model('Counter', counterSchema);
