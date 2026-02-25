@@ -17,7 +17,18 @@ require('dotenv').config();
 const { pushMessage, client: lineClient } = require('./lineService');
 
 mongoose.connect(process.env.MONGO_URI)
-    .then(() => console.log('Mongoose connected successfully.'))
+    .then(async () => {
+        console.log('Mongoose connected successfully.');
+        try {
+            // CRITICAL FIX: Mongoose doesn't drop old unique indexes automatically.
+            // We must explicitly drop the old globally unique queueNumber index
+            // to allow the new session-based duplicates to work!
+            await Queue.collection.dropIndex('queueNumber_1');
+            console.log('Dropped legacy queueNumber_1 index successfully.');
+        } catch (err) {
+            // Ignore if the index is already dropped or doesn't exist
+        }
+    })
     .catch((err) => console.error('Mongoose connection error:', err));
 
 const app = express();
