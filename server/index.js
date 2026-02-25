@@ -7,6 +7,7 @@ const mongoose = require('mongoose');
 
 const Queue = require('./models/Queue');
 const Setting = require('./models/Setting');
+const Counter = require('./models/Counter');
 require('./database'); // Initialize DB seeding
 
 const { pushMessage, client: lineClient } = require('./lineService');
@@ -66,7 +67,11 @@ app.use(express.json());
 async function broadcastUpdate() {
     // Return only active queues (waiting, called, dining)
     const queues = await Queue.find({ status: { $in: ['waiting', 'called', 'dining'] } }).sort({ _id: 1 }).lean();
-    queues.forEach(q => { q.id = q._id.toString(); });
+    queues.forEach(q => {
+        q.id = q._id.toString();
+        // Fallback for older entries without queueNumber
+        if (q.queueNumber === undefined) q.queueNumber = q.id;
+    });
 
     // Calculate Wait Time Estimate
     const avgTimeSetting = await Setting.findOne({ key: 'avg_time' }).lean();
@@ -99,7 +104,11 @@ async function broadcastUpdate() {
 // Get active queues
 app.get('/api/queues', async (req, res) => {
     const queues = await Queue.find({ status: { $in: ['waiting', 'called', 'dining'] } }).sort({ _id: 1 }).lean();
-    queues.forEach(q => { q.id = q._id.toString(); });
+    queues.forEach(q => {
+        q.id = q._id.toString();
+        // Fallback for older entries without queueNumber
+        if (q.queueNumber === undefined) q.queueNumber = q.id;
+    });
 
     // Re-calculate times (duplicate logic, should refactor but fine for now)
     const avgTimeSetting = await Setting.findOne({ key: 'avg_time' }).lean();
@@ -155,7 +164,15 @@ app.post('/api/reserve', async (req, res) => {
     }
 
     try {
+        // Atomic queue number increment
+        const counter = await Counter.findByIdAndUpdate(
+            { _id: 'queueNumber' },
+            { $inc: { seq: 1 } },
+            { new: true, upsert: true }
+        );
+
         const newQueue = await Queue.create({
+            queueNumber: counter.seq,
             customer_name: name,
             line_id: lineId || null,
             phone_number: phone || null,
@@ -166,7 +183,7 @@ app.post('/api/reserve', async (req, res) => {
         });
 
         broadcastUpdate();
-        res.json({ success: true, id: newQueue._id.toString() });
+        res.json({ success: true, id: newQueue._id.toString(), queueNumber: newQueue.queueNumber });
     } catch (err) {
         console.error('Error in /api/reserve:', err);
         res.status(500).json({ error: 'Internal Server Error', details: err.message });
@@ -211,8 +228,8 @@ app.post('/api/admin/call', async (req, res) => {
         await queue.save();
 
         // Send LINE
-        if (queue.line_id) {
-            const msg = `ถึงคิวของคุณแล้ว! (คิวที่ ${id})\nกรุณามาที่หน้าร้านได้เลยครับ\n\nYour queue (${id}) is ready!`;
+        if (queue.line_id && queue.queueNumber) {
+            const msg = `ถึงคิวของคุณแล้ว! (คิวที่ ${queue.queueNumber})\nกรุณามาที่หน้าร้านได้เลยครับ\n\nYour queue (${queue.queueNumber}) is ready!`;
             await pushMessage(queue.line_id, msg);
         }
 
@@ -314,7 +331,11 @@ io.on('connection', async (socket) => {
     // Send initial state manually
     try {
         const queues = await Queue.find({ status: { $in: ['waiting', 'called', 'dining'] } }).sort({ _id: 1 }).lean();
-        queues.forEach(q => { q.id = q._id.toString(); });
+        queues.forEach(q => {
+            q.id = q._id.toString();
+            // Fallback for older entries without queueNumber
+            if (q.queueNumber === undefined) q.queueNumber = q.id;
+        });
         socket.emit('queue_updated', queues);
     } catch (error) {
         console.error('Socket init error:', error);

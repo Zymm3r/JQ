@@ -13,6 +13,10 @@ const historySchema = new mongoose.Schema({
 });
 
 const queueSchema = new mongoose.Schema({
+    queueNumber: {
+        type: Number,
+        unique: true
+    },
     status: {
         type: String,
         enum: ['waiting', 'called', 'dining', 'completed', 'cancelled'],
