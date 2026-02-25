@@ -1,32 +1,82 @@
-// models/Queue.js
 const mongoose = require('mongoose');
 
-const queueSchema = new mongoose.Schema({
-    sessionId: { type: String, required: true, index: true }, // Replaces dateKey, identifies the current running session
-    queueNumber: { type: Number, required: true },
-    status: {
+const historySchema = new mongoose.Schema({
+    action: {
         type: String,
-        enum: ['waiting', 'calling', 'dining', 'completed', 'cancelled'],
-        default: 'waiting',
-        index: true // Indexed for scheduler performance
+        enum: ['reserved', 'called', 'seated', 'completed', 'cancelled'],
+        required: true
     },
-    customer_name: { type: String, required: true },
-    line_id: { type: String, default: null },
-    phone_number: { type: String, default: null },
-    pax: { type: Number, default: 1 },
-    time_slot: { type: String, default: null },
-    createdAt: { type: Date, default: Date.now },
-    calledAt: { type: Date, default: null },
-    diningAt: { type: Date, default: null },
-    completedAt: { type: Date, default: null },
-    cancelledAt: { type: Date, default: null },
-    manualAction: { type: Boolean, default: false }
+    timestamp: {
+        type: Date,
+        default: Date.now
+    }
 });
 
-// CRITICAL: Prevent duplicate queue numbers per session at the database layer (E11000 protection)
+const queueSchema = new mongoose.Schema({
+    sessionId: {
+        type: String,
+        required: true
+    },
+    queueNumber: {
+        type: Number,
+        required: true
+    },
+    status: {
+        type: String,
+        enum: ['waiting', 'called', 'dining', 'completed', 'cancelled'],
+        default: 'waiting',
+        required: true
+    },
+    customer_name: {
+        type: String,
+        required: true
+    },
+    line_id: {
+        type: String,
+        default: null
+    },
+    phone_number: {
+        type: String,
+        default: null
+    },
+    pax: {
+        type: Number,
+        default: 1
+    },
+    time_slot: {
+        type: String,
+        default: null
+    },
+    start_time: {
+        type: Date,
+        default: null
+    },
+    end_time: {
+        type: Date,
+        default: null
+    },
+    calledAt: {
+        type: Date,
+        default: null
+    },
+    cancelledAt: {
+        type: Date,
+        default: null
+    },
+    manualAction: {
+        type: Boolean,
+        default: false
+    },
+    history: [historySchema]
+}, {
+    timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' }
+});
+
+queueSchema.index({ status: 1 });
+queueSchema.index({ status: 1, created_at: 1, manualAction: 1 });
+queueSchema.index({ sessionId: 1 });
 queueSchema.index({ sessionId: 1, queueNumber: 1 }, { unique: true });
 
-// Optimize cron job queries
-queueSchema.index({ status: 1, createdAt: 1, manualAction: 1 });
+const Queue = mongoose.model('Queue', queueSchema);
 
-module.exports = mongoose.model('Queue', queueSchema);
+module.exports = Queue;

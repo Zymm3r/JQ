@@ -2,7 +2,7 @@
 const mongoose = require('mongoose');
 
 const counterSchema = new mongoose.Schema({
-    name: { type: String, required: true, unique: true }, // e.g., 'queueNumber-2026-02-26'
+    sessionId: { type: String, required: true, unique: true },
     seq: { type: Number, default: 0 }
 });
 
