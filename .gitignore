@@ -1,7 +1,21 @@
+# dependencies
 node_modules/
+
+# build
 dist/
 build/
+
+# environment
 .env
+
+# system files
 .DS_Store
+
+# logs
 *.log
-queue.db
+
+# old sqlite database files
+*.db
+
+# vscode
+.vscode/

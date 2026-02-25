@@ -3,18 +3,18 @@ const http = require('http');
 const path = require('path');
 const { Server } = require('socket.io');
 const cors = require('cors');
-const db = require('./database');
+const mongoose = require('mongoose');
+
+const Queue = require('./models/Queue');
+const Setting = require('./models/Setting');
+require('./database'); // Initialize DB seeding
+
 const { pushMessage, client: lineClient } = require('./lineService');
 const line = require('@line/bot-sdk');
 
-// Auto-run migrations on start
-try {
-    require('./database_migrate');
-    require('./database_migrate_timeslot');
-    console.log('Database migrations executed.');
-} catch (err) {
-    console.error('Migration execution failed:', err);
-}
+mongoose.connect(process.env.MONGO_URI)
+    .then(() => console.log('Mongoose connected successfully.'))
+    .catch((err) => console.error('Mongoose connection error:', err));
 
 const app = express();
 const server = http.createServer(app);
@@ -63,12 +63,13 @@ function handleEvent(event) {
 app.use(express.json());
 
 // Helper: Broadcast update
-function broadcastUpdate() {
+async function broadcastUpdate() {
     // Return only active queues (waiting, called, dining)
-    const queues = db.prepare("SELECT * FROM queues WHERE status IN ('waiting', 'called', 'dining') ORDER BY id ASC").all();
+    const queues = await Queue.find({ status: { $in: ['waiting', 'called', 'dining'] } }).sort({ _id: 1 }).lean();
+    queues.forEach(q => { q.id = q._id.toString(); });
 
     // Calculate Wait Time Estimate
-    const avgTimeSetting = db.prepare("SELECT value FROM settings WHERE key = 'avg_time'").get();
+    const avgTimeSetting = await Setting.findOne({ key: 'avg_time' }).lean();
     const avgTime = parseInt(avgTimeSetting?.value || 30);
 
     // Simple Heuristic: 
@@ -96,10 +97,12 @@ function broadcastUpdate() {
 // --- API Routes ---
 
 // Get active queues
-app.get('/api/queues', (req, res) => {
-    const queues = db.prepare("SELECT * FROM queues WHERE status IN ('waiting', 'called', 'dining') ORDER BY id ASC").all();
+app.get('/api/queues', async (req, res) => {
+    const queues = await Queue.find({ status: { $in: ['waiting', 'called', 'dining'] } }).sort({ _id: 1 }).lean();
+    queues.forEach(q => { q.id = q._id.toString(); });
+
     // Re-calculate times (duplicate logic, should refactor but fine for now)
-    const avgTimeSetting = db.prepare("SELECT value FROM settings WHERE key = 'avg_time'").get();
+    const avgTimeSetting = await Setting.findOne({ key: 'avg_time' }).lean();
     const avgTime = parseInt(avgTimeSetting?.value || 30);
     const TOTAL_TABLES = 10;
     const timePerTable = avgTime / TOTAL_TABLES;
@@ -116,45 +119,54 @@ app.get('/api/queues', (req, res) => {
 });
 
 // Get single queue status
-app.get('/api/queues/:id', (req, res) => {
-    const queue = db.prepare('SELECT * FROM queues WHERE id = ?').get(req.params.id);
-    if (!queue) return res.status(404).json({ error: 'Queue not found' });
+app.get('/api/queues/:id', async (req, res) => {
+    try {
+        const queue = await Queue.findById(req.params.id).lean();
+        if (!queue) return res.status(404).json({ error: 'Queue not found' });
+        queue.id = queue._id.toString();
 
-    // Calculate position
-    if (queue.status === 'waiting') {
-        const position = db.prepare("SELECT count(*) as count FROM queues WHERE status = 'waiting' AND id < ?").get(queue.id).count;
-        const avgTimeSetting = db.prepare("SELECT value FROM settings WHERE key = 'avg_time'").get();
-        const avgTime = parseInt(avgTimeSetting?.value || 30);
-        const timePerTable = avgTime / 10;
-        queue.estimatedWaitTime = Math.ceil((position + 1) * timePerTable);
-        queue.queueAhead = position;
+        // Calculate position
+        if (queue.status === 'waiting') {
+            const position = await Queue.countDocuments({ status: 'waiting', _id: { $lt: queue._id } });
+            const avgTimeSetting = await Setting.findOne({ key: 'avg_time' }).lean();
+            const avgTime = parseInt(avgTimeSetting?.value || 30);
+            const timePerTable = avgTime / 10;
+            queue.estimatedWaitTime = Math.ceil((position + 1) * timePerTable);
+            queue.queueAhead = position;
+        }
+
+        res.json(queue);
+    } catch (err) {
+        res.status(400).json({ error: 'Invalid ID' });
     }
-
-    res.json(queue);
 });
 
 // Reserve Queue (New Dynamic)
-app.post('/api/reserve', (req, res) => {
+app.post('/api/reserve', async (req, res) => {
     const { name, lineId, pax, phone, timeSlot } = req.body;
     if (!name) return res.status(400).json({ error: 'Name is required' });
 
     // Check if Line ID already has active queue
     if (lineId) {
-        const existing = db.prepare("SELECT * FROM queues WHERE line_id = ? AND status IN ('waiting', 'called', 'dining')").get(lineId);
+        const existing = await Queue.findOne({ line_id: lineId, status: { $in: ['waiting', 'called', 'dining'] } }).lean();
         if (existing) {
-            return res.status(409).json({ error: 'คุณมีคิวอยู่แล้ว (You already have a queue)', queueId: existing.id });
+            return res.status(409).json({ error: 'คุณมีคิวอยู่แล้ว (You already have a queue)', queueId: existing._id.toString() });
         }
     }
 
     try {
-        const insert = db.prepare("INSERT INTO queues (customer_name, line_id, phone_number, pax, status, time_slot) VALUES (?, ?, ?, ?, 'waiting', ?)");
-        const info = insert.run(name, lineId || null, phone || null, pax || 1, timeSlot || null);
-
-        // Log history
-        db.prepare("INSERT INTO history (queue_id, action) VALUES (?, 'reserved')").run(info.lastInsertRowid);
+        const newQueue = await Queue.create({
+            customer_name: name,
+            line_id: lineId || null,
+            phone_number: phone || null,
+            pax: pax || 1,
+            time_slot: timeSlot || null,
+            status: 'waiting',
+            history: [{ action: 'reserved' }]
+        });
 
         broadcastUpdate();
-        res.json({ success: true, id: info.lastInsertRowid });
+        res.json({ success: true, id: newQueue._id.toString() });
     } catch (err) {
         console.error('Error in /api/reserve:', err);
         res.status(500).json({ error: 'Internal Server Error', details: err.message });
@@ -162,10 +174,10 @@ app.post('/api/reserve', (req, res) => {
 });
 
 // Cancel Queue (Customer)
-app.post('/api/cancel', (req, res) => {
+app.post('/api/cancel', async (req, res) => {
     try {
         const { id, lineId } = req.body;
-        const queue = db.prepare('SELECT * FROM queues WHERE id = ?').get(id);
+        const queue = await Queue.findById(id);
 
         if (!queue) return res.status(404).json({ error: 'Queue not found' });
 
@@ -174,10 +186,9 @@ app.post('/api/cancel', (req, res) => {
             return res.status(403).json({ error: 'Unauthorized' });
         }
 
-        const update = db.prepare("UPDATE queues SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP WHERE id = ?");
-        update.run(id);
-
-        db.prepare("INSERT INTO history (queue_id, action) VALUES (?, 'cancelled')").run(id);
+        queue.status = 'cancelled';
+        queue.history.push({ action: 'cancelled' });
+        await queue.save();
 
         broadcastUpdate();
         res.json({ success: true });
@@ -189,59 +200,77 @@ app.post('/api/cancel', (req, res) => {
 
 // Admin: Call Queue
 app.post('/api/admin/call', async (req, res) => {
-    const { id } = req.body;
-    const queue = db.prepare('SELECT * FROM queues WHERE id = ?').get(id);
+    try {
+        const { id } = req.body;
+        const queue = await Queue.findById(id);
 
-    if (!queue) return res.status(404).json({ error: 'Queue not found' });
+        if (!queue) return res.status(404).json({ error: 'Queue not found' });
 
-    const update = db.prepare("UPDATE queues SET status = 'called', updated_at = CURRENT_TIMESTAMP WHERE id = ?");
-    update.run(id);
+        queue.status = 'called';
+        queue.history.push({ action: 'called' });
+        await queue.save();
 
-    db.prepare("INSERT INTO history (queue_id, action) VALUES (?, 'called')").run(id);
+        // Send LINE
+        if (queue.line_id) {
+            const msg = `ถึงคิวของคุณแล้ว! (คิวที่ ${id})\nกรุณามาที่หน้าร้านได้เลยครับ\n\nYour queue (${id}) is ready!`;
+            await pushMessage(queue.line_id, msg);
+        }
 
-    // Send LINE
-    if (queue.line_id) {
-        const msg = `ถึงคิวของคุณแล้ว! (คิวที่ ${id})\nกรุณามาที่หน้าร้านได้เลยครับ\n\nYour queue (${id}) is ready!`;
-        await pushMessage(queue.line_id, msg);
+        broadcastUpdate();
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: 'Internal Server Error' });
     }
-
-    broadcastUpdate();
-    res.json({ success: true });
 });
 
 // Admin: Seat Customer (Start Timer)
-app.post('/api/admin/seat', (req, res) => {
-    const { id } = req.body;
-    const update = db.prepare("UPDATE queues SET status = 'dining', start_time = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?");
-    update.run(id);
+app.post('/api/admin/seat', async (req, res) => {
+    try {
+        const { id } = req.body;
+        const queue = await Queue.findById(id);
+        if (!queue) return res.status(404).json({ error: 'Queue not found' });
 
-    db.prepare("INSERT INTO history (queue_id, action) VALUES (?, 'seated')").run(id);
+        queue.status = 'dining';
+        queue.start_time = new Date();
+        queue.history.push({ action: 'seated' });
+        await queue.save();
 
-    broadcastUpdate();
-    res.json({ success: true });
+        broadcastUpdate();
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: 'Internal Server Error' });
+    }
 });
 
 // Admin: Complete Queue (Was Clear)
-app.post('/api/admin/complete', (req, res) => {
-    const { id } = req.body;
-    const update = db.prepare("UPDATE queues SET status = 'completed', end_time = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?");
-    update.run(id);
+app.post('/api/admin/complete', async (req, res) => {
+    try {
+        const { id } = req.body;
+        const queue = await Queue.findById(id);
+        if (!queue) return res.status(404).json({ error: 'Queue not found' });
 
-    db.prepare("INSERT INTO history (queue_id, action) VALUES (?, 'completed')").run(id);
+        queue.status = 'completed';
+        queue.end_time = new Date();
+        queue.history.push({ action: 'completed' });
+        await queue.save();
 
-    broadcastUpdate();
-    res.json({ success: true });
+        broadcastUpdate();
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: 'Internal Server Error' });
+    }
 });
 
 // Admin: Get Stats
-app.get('/api/admin/stats', (req, res) => {
+app.get('/api/admin/stats', async (req, res) => {
     try {
-        const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+        const startOfToday = new Date();
+        startOfToday.setHours(0, 0, 0, 0);
 
-        const total = db.prepare("SELECT count(*) as count FROM queues WHERE date(created_at) = date('now')").get().count;
-        const completed = db.prepare("SELECT count(*) as count FROM queues WHERE status = 'completed' AND date(created_at) = date('now')").get().count;
-        const cancelled = db.prepare("SELECT count(*) as count FROM queues WHERE status = 'cancelled' AND date(created_at) = date('now')").get().count;
-        const waiting = db.prepare("SELECT count(*) as count FROM queues WHERE status = 'waiting'").get().count;
+        const total = await Queue.countDocuments({ created_at: { $gte: startOfToday } });
+        const completed = await Queue.countDocuments({ status: 'completed', created_at: { $gte: startOfToday } });
+        const cancelled = await Queue.countDocuments({ status: 'cancelled', created_at: { $gte: startOfToday } });
+        const waiting = await Queue.countDocuments({ status: 'waiting' });
 
         res.json({ total, completed, cancelled, waiting });
     } catch (err) {
@@ -251,13 +280,13 @@ app.get('/api/admin/stats', (req, res) => {
 });
 
 // Admin: Update Settings
-app.post('/api/admin/settings', (req, res) => {
+app.post('/api/admin/settings', async (req, res) => {
     const { avgTime, avgWaitTime } = req.body;
     if (avgTime) {
-        db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('avg_time', ?)").run(String(avgTime));
+        await Setting.updateOne({ key: 'avg_time' }, { value: String(avgTime) }, { upsert: true });
     }
     if (avgWaitTime) {
-        db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('avg_wait_time', ?)").run(String(avgWaitTime));
+        await Setting.updateOne({ key: 'avg_wait_time' }, { value: String(avgWaitTime) }, { upsert: true });
     }
     broadcastUpdate(); // Update estimates
     res.json({ success: true });
@@ -277,14 +306,19 @@ app.get('*', (req, res) => {
 });
 
 // Socket Connection
-io.on('connection', (socket) => {
+io.on('connection', async (socket) => {
     console.log('Client connected');
     // Trigger an update just for this client (hacky but works to reuse logic)
     // Ideally we extract the logic to 'getQueuesData()' and emit that.
 
     // Send initial state manually
-    const queues = db.prepare("SELECT * FROM queues WHERE status IN ('waiting', 'called', 'dining') ORDER BY id ASC").all();
-    socket.emit('queue_updated', queues);
+    try {
+        const queues = await Queue.find({ status: { $in: ['waiting', 'called', 'dining'] } }).sort({ _id: 1 }).lean();
+        queues.forEach(q => { q.id = q._id.toString(); });
+        socket.emit('queue_updated', queues);
+    } catch (error) {
+        console.error('Socket init error:', error);
+    }
 });
 
 const PORT = 3000;
