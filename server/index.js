@@ -68,7 +68,11 @@ async function getCurrentSessionId() {
     let setting = await Setting.findOne({ key: 'current_session_id' }).lean();
     if (!setting) {
         const newSessionId = new mongoose.Types.ObjectId().toString();
-        await Setting.create({ key: 'current_session_id', value: newSessionId });
+        await Setting.findOneAndUpdate(
+            { key: 'current_session_id' },
+            { $setOnInsert: { value: newSessionId } },
+            { upsert: true, new: true, runValidators: true }
+        );
         return newSessionId;
     }
     return setting.value;
@@ -341,7 +345,11 @@ app.post('/api/admin/complete', async (req, res) => {
 app.post('/api/admin/reset-session', async (req, res) => {
     try {
         const newSessionId = new mongoose.Types.ObjectId().toString();
-        await Setting.updateOne({ key: 'current_session_id' }, { value: newSessionId }, { upsert: true });
+        await Setting.findOneAndUpdate(
+            { key: 'current_session_id' },
+            { value: newSessionId },
+            { upsert: true, new: true, runValidators: true }
+        );
 
         // Reset counter for that session
         await Counter.findOneAndUpdate(
@@ -378,15 +386,28 @@ app.get('/api/admin/stats', async (req, res) => {
 
 // Admin: Update Settings
 app.post('/api/admin/settings', async (req, res) => {
-    const { avgTime, avgWaitTime } = req.body;
-    if (avgTime) {
-        await Setting.updateOne({ key: 'avg_time' }, { value: String(avgTime) }, { upsert: true });
+    try {
+        const { avgTime, avgWaitTime } = req.body;
+        if (avgTime) {
+            await Setting.findOneAndUpdate(
+                { key: 'avg_time' },
+                { value: String(avgTime) },
+                { upsert: true, new: true, runValidators: true }
+            );
+        }
+        if (avgWaitTime) {
+            await Setting.findOneAndUpdate(
+                { key: 'avg_wait_time' },
+                { value: String(avgWaitTime) },
+                { upsert: true, new: true, runValidators: true }
+            );
+        }
+        broadcastUpdate(); // Update estimates
+        res.json({ success: true });
+    } catch (err) {
+        console.error('Error updating settings:', err);
+        res.status(500).json({ error: 'Failed to update settings' });
     }
-    if (avgWaitTime) {
-        await Setting.updateOne({ key: 'avg_wait_time' }, { value: String(avgWaitTime) }, { upsert: true });
-    }
-    broadcastUpdate(); // Update estimates
-    res.json({ success: true });
 });
 
 // Serve Static Files (Frontend)
