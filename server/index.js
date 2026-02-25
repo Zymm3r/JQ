@@ -63,17 +63,11 @@ function handleEvent(event) {
 // --- Body Parser for other routes ---
 app.use(express.json());
 
-// Helper: Get or Create current Session ID
+// Helper: Get current Session ID
 async function getCurrentSessionId() {
-    let setting = await Setting.findOne({ key: 'current_session_id' }).lean();
-    if (!setting) {
-        const newSessionId = new mongoose.Types.ObjectId().toString();
-        await Setting.findOneAndUpdate(
-            { key: 'current_session_id' },
-            { $setOnInsert: { value: newSessionId } },
-            { upsert: true, new: true, runValidators: true }
-        );
-        return newSessionId;
+    let setting = await Setting.findOne({ key: 'active_session' }).lean();
+    if (!setting || !setting.value) {
+        throw new Error('NO_ACTIVE_SESSION');
     }
     return setting.value;
 }
@@ -81,36 +75,44 @@ async function getCurrentSessionId() {
 // Helper: Broadcast update
 async function broadcastUpdate() {
     // Return only active queues (waiting, called, dining)
-    const sessionId = await getCurrentSessionId();
-    const queues = await Queue.find({ sessionId, status: { $in: ['waiting', 'called', 'dining'] } }).sort({ queueNumber: 1 }).lean();
-    queues.forEach(q => {
-        q.id = q.queueNumber !== undefined ? q.queueNumber : q._id.toString();
-    });
+    try {
+        const sessionId = await getCurrentSessionId();
+        const queues = await Queue.find({ sessionId, status: { $in: ['waiting', 'called', 'dining'] } }).sort({ queueNumber: 1 }).lean();
+        queues.forEach(q => {
+            q.id = q.queueNumber !== undefined ? q.queueNumber : q._id.toString();
+        });
 
-    // Calculate Wait Time Estimate
-    const avgTimeSetting = await Setting.findOne({ key: 'avg_time' }).lean();
-    const avgTime = parseInt(avgTimeSetting?.value || 30);
+        // Calculate Wait Time Estimate
+        const avgTimeSetting = await Setting.findOne({ key: 'avg_time' }).lean();
+        const avgTime = parseInt(avgTimeSetting?.value || 30);
 
-    // Simple Heuristic: 
-    // We assume 1 table clears every (AvgTime / TotalTables) minutes.
-    // Let's assume we have 10 tables for now (fixed constant).
-    const TOTAL_TABLES = 10;
-    const timePerTable = avgTime / TOTAL_TABLES;
+        // Simple Heuristic: 
+        // We assume 1 table clears every (AvgTime / TotalTables) minutes.
+        // Let's assume we have 10 tables for now (fixed constant).
+        const TOTAL_TABLES = 10;
+        const timePerTable = avgTime / TOTAL_TABLES;
 
-    // Add estimated wait time to each queue
-    let waitingCount = 0;
-    const queuesWithTime = queues.map(q => {
-        if (q.status === 'called' || q.status === 'dining') {
-            return { ...q, estimatedWaitTime: 0 };
+        // Add estimated wait time to each queue
+        let waitingCount = 0;
+        const queuesWithTime = queues.map(q => {
+            if (q.status === 'called' || q.status === 'dining') {
+                return { ...q, estimatedWaitTime: 0 };
+            }
+            // For waiting queues
+            // Wait time = (My Position in Waiting List) * TimePerTable
+            const waitMins = Math.ceil((waitingCount + 1) * timePerTable);
+            waitingCount++;
+            return { ...q, estimatedWaitTime: waitMins };
+        });
+
+        io.emit('queue_updated', queuesWithTime);
+    } catch (e) {
+        if (e.message === 'NO_ACTIVE_SESSION') {
+            io.emit('queue_updated', []); // Empty queues
+        } else {
+            console.error('Broadcast update error:', e);
         }
-        // For waiting queues
-        // Wait time = (My Position in Waiting List) * TimePerTable
-        const waitMins = Math.ceil((waitingCount + 1) * timePerTable);
-        waitingCount++;
-        return { ...q, estimatedWaitTime: waitMins };
-    });
-
-    io.emit('queue_updated', queuesWithTime);
+    }
 }
 
 // --- API Routes ---
@@ -146,7 +148,13 @@ app.get('/api/queues/:id', async (req, res) => {
         const isObjectId = /^[0-9a-fA-F]{24}$/.test(id);
         const numId = Number(id);
 
-        const sessionId = await getCurrentSessionId();
+        let sessionId;
+        try {
+            sessionId = await getCurrentSessionId();
+        } catch (e) {
+            return res.status(400).json({ error: 'No active session found. Please reset the queue.' });
+        }
+
         const query = isObjectId ? { _id: id } : (!isNaN(numId) ? { sessionId, queueNumber: numId } : null);
 
         if (!query) return res.status(400).json({ error: 'Invalid ID format' });
@@ -176,7 +184,12 @@ app.post('/api/reserve', async (req, res) => {
     if (!name) return res.status(400).json({ error: 'Name is required' });
 
     try {
-        const sessionId = await getCurrentSessionId();
+        let sessionId;
+        try {
+            sessionId = await getCurrentSessionId();
+        } catch (e) {
+            return res.status(400).json({ error: 'No active session available. Please contact admin.' });
+        }
 
         // Check if Line ID already has active queue
         if (lineId) {
@@ -223,7 +236,12 @@ app.post('/api/cancel', async (req, res) => {
         const numId = Number(id);
         if (isNaN(numId)) return res.status(400).json({ error: 'Invalid ID format' });
 
-        const sessionId = await getCurrentSessionId();
+        let sessionId;
+        try {
+            sessionId = await getCurrentSessionId();
+        } catch (e) {
+            return res.status(400).json({ error: 'No active session found.' });
+        }
 
         const query = { sessionId, queueNumber: numId, status: { $ne: 'cancelled' } };
         if (lineId) query.line_id = lineId;
@@ -256,7 +274,12 @@ app.post('/api/admin/call', async (req, res) => {
         const numId = Number(id);
         if (isNaN(numId)) return res.status(400).json({ error: 'Invalid ID format' });
 
-        const sessionId = await getCurrentSessionId();
+        let sessionId;
+        try {
+            sessionId = await getCurrentSessionId();
+        } catch (e) {
+            return res.status(400).json({ error: 'No active session found.' });
+        }
 
         const queue = await Queue.findOneAndUpdate(
             { sessionId, queueNumber: numId, status: 'waiting' },
@@ -292,7 +315,12 @@ app.post('/api/admin/seat', async (req, res) => {
         const numId = Number(id);
         if (isNaN(numId)) return res.status(400).json({ error: 'Invalid ID format' });
 
-        const sessionId = await getCurrentSessionId();
+        let sessionId;
+        try {
+            sessionId = await getCurrentSessionId();
+        } catch (e) {
+            return res.status(400).json({ error: 'No active session found.' });
+        }
 
         const queue = await Queue.findOneAndUpdate(
             { sessionId, queueNumber: numId, status: { $in: ['waiting', 'called'] } },
@@ -320,7 +348,12 @@ app.post('/api/admin/complete', async (req, res) => {
         const numId = Number(id);
         if (isNaN(numId)) return res.status(400).json({ error: 'Invalid ID format' });
 
-        const sessionId = await getCurrentSessionId();
+        let sessionId;
+        try {
+            sessionId = await getCurrentSessionId();
+        } catch (e) {
+            return res.status(400).json({ error: 'No active session found.' });
+        }
 
         const queue = await Queue.findOneAndUpdate(
             { sessionId, queueNumber: numId, status: 'dining' },
@@ -342,11 +375,13 @@ app.post('/api/admin/complete', async (req, res) => {
 });
 
 // Admin: Reset Session
-app.post('/api/admin/reset-session', async (req, res) => {
+app.post('/api/admin/reset', async (req, res) => {
     try {
-        const newSessionId = new mongoose.Types.ObjectId().toString();
+        const newSessionId = `session_${Date.now()}`;
+
+        // Ensure active_session is uniquely stored
         await Setting.findOneAndUpdate(
-            { key: 'current_session_id' },
+            { key: 'active_session' },
             { value: newSessionId },
             { upsert: true, new: true, runValidators: true }
         );
@@ -359,9 +394,9 @@ app.post('/api/admin/reset-session', async (req, res) => {
         );
 
         broadcastUpdate();
-        res.json({ success: true, sessionId: newSessionId });
+        res.json({ success: true, sessionId: newSessionId, message: 'Queue system reset successfully for new session' });
     } catch (err) {
-        console.error('Error in /api/admin/reset-session:', err);
+        console.error('Error in /api/admin/reset:', err);
         res.status(500).json({ error: 'Internal Server Error' });
     }
 });
