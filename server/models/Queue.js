@@ -2,7 +2,7 @@
 const mongoose = require('mongoose');
 
 const queueSchema = new mongoose.Schema({
-    dateKey: { type: String, required: true, index: true }, // e.g., 'YYYY-MM-DD'
+    sessionId: { type: String, required: true, index: true }, // Replaces dateKey, identifies the current running session
     queueNumber: { type: Number, required: true },
     status: {
         type: String,
@@ -23,8 +23,8 @@ const queueSchema = new mongoose.Schema({
     manualAction: { type: Boolean, default: false }
 });
 
-// CRITICAL: Prevent duplicate queue numbers per day at the database layer
-queueSchema.index({ dateKey: 1, queueNumber: 1 }, { unique: true });
+// CRITICAL: Prevent duplicate queue numbers per session at the database layer (E11000 protection)
+queueSchema.index({ sessionId: 1, queueNumber: 1 }, { unique: true });
 
 // Optimize cron job queries
 queueSchema.index({ status: 1, createdAt: 1, manualAction: 1 });

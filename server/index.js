@@ -11,6 +11,7 @@ const line = require('@line/bot-sdk');
 const Queue = require('./models/Queue');
 const Setting = require('./models/Setting');
 const Counter = require('./models/Counter');
+const QueueSession = require('./models/QueueSession'); // New Session Model
 require('dotenv').config();
 
 const { pushMessage, client: lineClient } = require('./lineService');
@@ -57,39 +58,80 @@ function handleEvent(event) {
 // --- Body Parser for other routes ---
 app.use(express.json());
 
-// Helper to get today's active scope safely (Server TZ or UTC+7)
-const getActiveDateKey = () => {
+// ==========================================
+// SESSION MANAGEMENT LOGIC
+// ==========================================
+// Gets the currently active session. Automatically resets if the day changed.
+async function getActiveSession() {
+    let session = await QueueSession.findOne({ isActive: true });
+
     const tzOffset = 7 * 60 * 60000;
-    return new Date(Date.now() + tzOffset).toISOString().split('T')[0];
-};
+    const now = new Date(Date.now() + tzOffset);
+    const dateStr = now.toISOString().split('T')[0]; // Format: YYYY-MM-DD
+
+    // Auto-rollover: if the active session is from a previous day, end it.
+    if (session && !session.sessionId.startsWith(dateStr)) {
+        session.isActive = false;
+        session.endedAt = new Date();
+        await session.save();
+        session = null;
+    }
+
+    if (!session) {
+        // Generate new generic session ID for this cycle
+        // Using timestamp structure YYYY-MM-DD-HHMMSS to guarantee unique daily sessions 
+        // even if reset happens multiple times
+        const timeStr = now.toISOString().split('T')[1].replace(/:/g, '').split('.')[0];
+        const newSessionId = `${dateStr}-${timeStr}`;
+
+        try {
+            session = await QueueSession.create({
+                sessionId: newSessionId,
+                isActive: true
+            });
+        } catch (err) {
+            // High concurrency duplicate session generation block
+            if (err.code === 11000) {
+                session = await QueueSession.findOne({ isActive: true });
+            } else {
+                throw err;
+            }
+        }
+    }
+    return session;
+}
 
 // Helper: Broadcast update
 async function broadcastUpdate() {
-    const today = getActiveDateKey();
-    const queues = await Queue.find({
-        dateKey: today,
-        status: { $in: ['waiting', 'calling', 'dining'] }
-    }).sort({ queueNumber: 1 }).lean();
+    try {
+        const session = await getActiveSession();
+        const queues = await Queue.find({
+            sessionId: session.sessionId,
+            status: { $in: ['waiting', 'calling', 'dining'] }
+        }).sort({ queueNumber: 1 }).lean();
 
-    // Calculate Wait Time Estimate
-    const settings = await Setting.findOne() || new Setting();
-    const avgTimeMins = settings.avgTimePerTableMins || 60;
-    const TOTAL_TABLES = 10;
-    const timePerTable = avgTimeMins / TOTAL_TABLES;
+        // Calculate Wait Time Estimate
+        const settings = await Setting.findOne() || new Setting();
+        const avgTimeMins = settings.avgTimePerTableMins || 60;
+        const TOTAL_TABLES = 10;
+        const timePerTable = avgTimeMins / TOTAL_TABLES;
 
-    let waitingCount = 0;
-    const queuesWithTime = queues.map(q => {
-        q.id = q.queueNumber;
+        let waitingCount = 0;
+        const queuesWithTime = queues.map(q => {
+            q.id = q.queueNumber;
 
-        if (q.status === 'calling' || q.status === 'dining') {
-            return { ...q, estimatedWaitTime: 0 };
-        }
-        const waitMins = Math.ceil((waitingCount + 1) * timePerTable);
-        waitingCount++;
-        return { ...q, estimatedWaitTime: waitMins };
-    });
+            if (q.status === 'calling' || q.status === 'dining') {
+                return { ...q, estimatedWaitTime: 0 };
+            }
+            const waitMins = Math.ceil((waitingCount + 1) * timePerTable);
+            waitingCount++;
+            return { ...q, estimatedWaitTime: waitMins };
+        });
 
-    io.emit('queue_updated', queuesWithTime);
+        io.emit('queue_updated', queuesWithTime);
+    } catch (e) {
+        console.error("Broadcast update failed:", e);
+    }
 }
 
 // ==========================================
@@ -99,9 +141,9 @@ async function broadcastUpdate() {
 // Get active queues
 app.get('/api/queues', async (req, res, next) => {
     try {
-        const today = getActiveDateKey();
+        const session = await getActiveSession();
         const queues = await Queue.find({
-            dateKey: today,
+            sessionId: session.sessionId,
             status: { $in: ['waiting', 'calling', 'dining'] }
         }).sort({ queueNumber: 1 }).lean();
 
@@ -133,8 +175,8 @@ app.get('/api/queues/:id', async (req, res, next) => {
             throw error;
         }
 
-        const dateKey = getActiveDateKey();
-        const queue = await Queue.findOne({ dateKey, queueNumber: queueNum }).lean();
+        const session = await getActiveSession();
+        const queue = await Queue.findOne({ sessionId: session.sessionId, queueNumber: queueNum }).lean();
         if (!queue) {
             const error = new Error('NOT_FOUND');
             error.status = 404;
@@ -146,7 +188,7 @@ app.get('/api/queues/:id', async (req, res, next) => {
         // Calculate position
         if (queue.status === 'waiting') {
             const position = await Queue.countDocuments({
-                dateKey,
+                sessionId: session.sessionId,
                 status: 'waiting',
                 queueNumber: { $lt: queue.queueNumber }
             });
@@ -170,12 +212,12 @@ app.post('/api/reserve', async (req, res, next) => {
             throw error;
         }
 
-        const dateKey = getActiveDateKey();
+        const session = await getActiveSession();
 
-        // Check if Line ID already has active queue today
+        // Check if Line ID already has active queue in current session
         if (lineId) {
             const existing = await Queue.findOne({
-                dateKey,
+                sessionId: session.sessionId,
                 line_id: lineId,
                 status: { $in: ['waiting', 'calling', 'dining'] }
             }).lean();
@@ -187,9 +229,9 @@ app.post('/api/reserve', async (req, res, next) => {
             }
         }
 
-        const counterName = `queueNumber-${dateKey}`;
+        const counterName = `queueNumber-${session.sessionId}`;
 
-        // ATOMIC INCREMENT
+        // ATOMIC INCREMENT: Prevents Duplicate Sequence Generations
         const counter = await Counter.findOneAndUpdate(
             { name: counterName },
             { $inc: { seq: 1 } },
@@ -197,7 +239,7 @@ app.post('/api/reserve', async (req, res, next) => {
         );
 
         const newQueue = await Queue.create({
-            dateKey,
+            sessionId: session.sessionId,
             queueNumber: counter.seq,
             customer_name: name,
             line_id: lineId || null,
@@ -214,9 +256,9 @@ app.post('/api/reserve', async (req, res, next) => {
     }
 });
 
-// GENERIC QUEUE ACTION PROCESSOR
+// GENERIC QUEUE ACTION PROCESSOR (Prevents Duplicate Code & Secures Queries)
 const processQueueAction = async (queueNumber, fromStatuses, targetStatus, timeField) => {
-    const dateKey = getActiveDateKey();
+    const session = await getActiveSession();
     const queueNum = parseInt(queueNumber, 10);
 
     if (isNaN(queueNum)) {
@@ -226,7 +268,7 @@ const processQueueAction = async (queueNumber, fromStatuses, targetStatus, timeF
     }
 
     const updatedQueue = await Queue.findOneAndUpdate(
-        { dateKey, queueNumber: queueNum, status: { $in: fromStatuses } },
+        { sessionId: session.sessionId, queueNumber: queueNum, status: { $in: fromStatuses } },
         {
             $set: {
                 status: targetStatus,
@@ -290,7 +332,7 @@ app.post('/api/admin/complete', async (req, res, next) => {
 app.post('/api/cancel', async (req, res, next) => {
     try {
         const { id, lineId } = req.body;
-        const dateKey = getActiveDateKey();
+        const session = await getActiveSession();
         const queueNum = parseInt(id, 10);
 
         if (isNaN(queueNum)) {
@@ -299,7 +341,7 @@ app.post('/api/cancel', async (req, res, next) => {
             throw err;
         }
 
-        const queue = await Queue.findOne({ dateKey, queueNumber: queueNum });
+        const queue = await Queue.findOne({ sessionId: session.sessionId, queueNumber: queueNum });
         if (!queue) {
             const err = new Error('NOT_FOUND');
             err.status = 404;
@@ -313,7 +355,6 @@ app.post('/api/cancel', async (req, res, next) => {
             throw err;
         }
 
-        // It is perfectly safe to cancel no matter status up until completed
         if (queue.status !== 'completed' && queue.status !== 'cancelled') {
             queue.status = 'cancelled';
             queue.cancelledAt = new Date();
@@ -326,13 +367,14 @@ app.post('/api/cancel', async (req, res, next) => {
     } catch (err) { next(err); }
 });
 
-// Admin: Reset (End of Day/Store Closure)
+// Admin: Reset (MANUAL / End of Day / Store Closure)
 app.post('/api/admin/reset', async (req, res, next) => {
     try {
-        const dateKey = getActiveDateKey();
-        // Archive all active queues for today smoothly
+        const session = await getActiveSession();
+
+        // Soft archive remaining active queues in current session
         await Queue.updateMany(
-            { dateKey, status: { $in: ['waiting', 'calling', 'dining'] } },
+            { sessionId: session.sessionId, status: { $in: ['waiting', 'calling', 'dining'] } },
             {
                 $set: {
                     status: 'cancelled',
@@ -342,26 +384,34 @@ app.post('/api/admin/reset', async (req, res, next) => {
             }
         );
 
+        // Terminate ACTIVE session so the next request spins up a clean start (counters start at 1)
+        session.isActive = false;
+        session.endedAt = new Date();
+        await session.save();
+
+        // Spin up the new session immediately
+        await getActiveSession();
+
         broadcastUpdate();
-        res.json({ success: true, message: "Queues archived. Ready for new day." });
+        res.json({ success: true, message: "Manual Session Reset completed. Counters have restarted at 1." });
     } catch (err) { next(err); }
 });
 
-// Admin: Get Stats
+// Admin: Get Stats (Queries metrics of the current session alone, per logical scope requirements)
 app.get('/api/admin/stats', async (req, res, next) => {
     try {
-        const dateKey = getActiveDateKey();
+        const session = await getActiveSession();
 
-        const total = await Queue.countDocuments({ dateKey });
-        const completed = await Queue.countDocuments({ dateKey, status: 'completed' });
-        const cancelled = await Queue.countDocuments({ dateKey, status: 'cancelled' });
-        const waiting = await Queue.countDocuments({ dateKey, status: 'waiting' });
+        const total = await Queue.countDocuments({ sessionId: session.sessionId });
+        const completed = await Queue.countDocuments({ sessionId: session.sessionId, status: 'completed' });
+        const cancelled = await Queue.countDocuments({ sessionId: session.sessionId, status: 'cancelled' });
+        const waiting = await Queue.countDocuments({ sessionId: session.sessionId, status: 'waiting' });
 
         res.json({ total, completed, cancelled, waiting });
     } catch (err) { next(err); }
 });
 
-// Admin: Settings Data (If requested directly)
+// Admin: Settings Data
 app.get('/api/admin/settings', async (req, res, next) => {
     try {
         const settings = await Setting.findOne() || new Setting();
@@ -393,15 +443,15 @@ app.use((err, req, res, next) => {
     console.error(`[Error] ${req.method} ${req.originalUrl}:`, err.message || err);
 
     if (err.status) {
-        return res.status(err.status).json({ error: err.message });
+        return res.status(err.status).json({ success: false, error: err.message });
     }
     if (err.code === 11000) {
-        return res.status(409).json({ error: 'Conflict. Duplicate key detected.' });
+        return res.status(409).json({ success: false, error: 'Conflict. Duplicate key detected.' });
     }
     if (err.name === 'ValidationError') {
-        return res.status(400).json({ error: err.message });
+        return res.status(400).json({ success: false, error: err.message });
     }
-    res.status(500).json({ error: 'Internal Server Error' });
+    res.status(500).json({ success: false, error: 'Internal Server Error' });
 });
 
 // Serve Static Files (Frontend)
@@ -420,9 +470,9 @@ app.get('*', (req, res) => {
 io.on('connection', async (socket) => {
     console.log('Client connected');
     try {
-        const today = getActiveDateKey();
+        const session = await getActiveSession();
         const queues = await Queue.find({
-            dateKey: today,
+            sessionId: session.sessionId,
             status: { $in: ['waiting', 'calling', 'dining'] }
         }).sort({ queueNumber: 1 }).lean();
 
@@ -442,7 +492,7 @@ server.listen(PORT, () => {
         try {
             const settings = await Setting.findOne() || new Setting();
             const now = new Date();
-            const today = getActiveDateKey();
+            const session = await getActiveSession();
 
             const waitMins = settings.avgWaitMins || 15;
             const dineMins = settings.avgTimePerTableMins || 60;
@@ -452,13 +502,13 @@ server.listen(PORT, () => {
 
             // Auto-Call: waiting -> calling
             const callResult = await Queue.updateMany(
-                { dateKey: today, status: 'waiting', createdAt: { $lte: callThreshold }, manualAction: false },
+                { sessionId: session.sessionId, status: 'waiting', createdAt: { $lte: callThreshold }, manualAction: false },
                 { $set: { status: 'calling', calledAt: now } }
             );
 
             // Auto-Complete: dining -> completed
             const completeResult = await Queue.updateMany(
-                { dateKey: today, status: 'dining', diningAt: { $lte: completeThreshold }, manualAction: false },
+                { sessionId: session.sessionId, status: 'dining', diningAt: { $lte: completeThreshold }, manualAction: false },
                 { $set: { status: 'completed', completedAt: now } }
             );
 
@@ -466,6 +516,9 @@ server.listen(PORT, () => {
                 console.log(`[Cron] Executed. Auto-Called: ${callResult.modifiedCount} | Auto-Completed: ${completeResult.modifiedCount}`);
                 broadcastUpdate();
             }
+
+            // Daily session check auto-rollover mechanism handled by active call logic:
+            // Since we do getActiveSession above, if it crossed over midnight during cron, it automatically restarts seamlessly.
         } catch (err) {
             console.error('[CRON Error] Failed to execute queue automation:', err);
         }
