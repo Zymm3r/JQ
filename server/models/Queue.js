@@ -14,8 +14,7 @@ const historySchema = new mongoose.Schema({
 
 const queueSchema = new mongoose.Schema({
     queueNumber: {
-        type: Number,
-        unique: true
+        type: Number
     },
     status: {
         type: String,

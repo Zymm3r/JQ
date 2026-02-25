@@ -135,9 +135,12 @@ app.get('/api/queues/:id', async (req, res) => {
         if (!queue) return res.status(404).json({ error: 'Queue not found' });
         queue.id = queue.queueNumber !== undefined ? queue.queueNumber : queue._id.toString();
 
-        // Calculate position
+        // Calculate position - We must refine this condition to include todays scope
         if (queue.status === 'waiting') {
-            const position = await Queue.countDocuments({ status: 'waiting', _id: { $lt: queue._id } });
+            const startOfToday = new Date();
+            startOfToday.setHours(0, 0, 0, 0);
+
+            const position = await Queue.countDocuments({ status: 'waiting', created_at: { $gte: startOfToday, $lt: queue.created_at } });
             const avgTimeSetting = await Setting.findOne({ key: 'avg_time' }).lean();
             const avgTime = parseInt(avgTimeSetting?.value || 30);
             const timePerTable = avgTime / 10;
@@ -166,9 +169,19 @@ app.post('/api/reserve', async (req, res) => {
     }
 
     try {
-        // Atomic queue number increment
+        let setting = await Setting.findOne({ key: 'active_day' }).lean();
+        let activeDay = setting ? setting.value : null;
+        if (!activeDay) {
+            const localDate = new Date(Date.now() + 7 * 60 * 60000);
+            activeDay = localDate.toISOString().split('T')[0];
+            await Setting.updateOne({ key: 'active_day' }, { value: activeDay }, { upsert: true });
+        }
+
+        const counterKey = `queueNumber-${activeDay}`;
+
+        // Atomic queue number increment specifically per day cycle
         const counter = await Counter.findByIdAndUpdate(
-            { _id: 'queueNumber' },
+            { _id: counterKey },
             { $inc: { seq: 1 } },
             { new: true, upsert: true }
         );
@@ -298,6 +311,29 @@ app.post('/api/admin/complete', async (req, res) => {
         broadcastUpdate();
         res.json({ success: true });
     } catch (err) {
+        res.status(500).json({ error: 'Internal Server Error' });
+    }
+});
+
+// Admin: Reset (End of Day/Store Closure)
+app.post('/api/admin/reset', async (req, res) => {
+    try {
+        // Safely map and save to execute mongoose subdocument constraints robustly instead of updateMany bulk which bugs easily
+        const activeQueues = await Queue.find({ status: { $in: ['waiting', 'called', 'dining'] } });
+        for (const q of activeQueues) {
+            q.status = 'cancelled';
+            q.history.push({ action: 'cancelled' });
+            await q.save();
+        }
+
+        // Cycle the active key uniquely to hard-reset sequence numbering safely to 1
+        const nextKey = new Date().getTime().toString();
+        await Setting.updateOne({ key: 'active_day' }, { value: nextKey }, { upsert: true });
+
+        broadcastUpdate();
+        res.json({ success: true });
+    } catch (err) {
+        console.error('Error in /api/admin/reset:', err);
         res.status(500).json({ error: 'Internal Server Error' });
     }
 });
