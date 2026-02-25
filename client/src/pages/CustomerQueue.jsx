@@ -21,7 +21,7 @@ export default function CustomerQueue() {
         const handleUpdate = (updatedQueues) => {
             if (!Array.isArray(updatedQueues)) return;
             // If the current queue is in the list, update it
-            const me = updatedQueues.find(q => q.id === parseInt(id));
+            const me = updatedQueues.find(q => String(q.id) === String(id));
             if (me) {
                 setQueue(me);
             } else {

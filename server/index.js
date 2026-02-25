@@ -126,8 +126,11 @@ app.get('/api/queues', async (req, res) => {
 // Get single queue status
 app.get('/api/queues/:id', async (req, res) => {
     try {
-        const id = req.params.id;
-        const query = mongoose.Types.ObjectId.isValid(id) ? { _id: id } : { queueNumber: Number(id) };
+        const id = String(req.params.id);
+        const isObjectId = /^[0-9a-fA-F]{24}$/.test(id);
+        const numId = Number(id);
+        const query = isObjectId ? { _id: id } : (!isNaN(numId) ? { queueNumber: numId } : null);
+        if (!query) return res.status(400).json({ error: 'Invalid ID format' });
         const queue = await Queue.findOne(query).lean();
         if (!queue) return res.status(404).json({ error: 'Queue not found' });
         queue.id = queue.queueNumber !== undefined ? queue.queueNumber : queue._id.toString();
@@ -194,7 +197,11 @@ app.post('/api/reserve', async (req, res) => {
 app.post('/api/cancel', async (req, res) => {
     try {
         const { id, lineId } = req.body;
-        const query = mongoose.Types.ObjectId.isValid(id) ? { _id: id } : { queueNumber: Number(id) };
+        const strId = String(id);
+        const isObjectId = /^[0-9a-fA-F]{24}$/.test(strId);
+        const numId = Number(id);
+        const query = isObjectId ? { _id: strId } : (!isNaN(numId) ? { queueNumber: numId } : null);
+        if (!query) return res.status(400).json({ error: 'Invalid ID format' });
         const queue = await Queue.findOne(query);
 
         if (!queue) return res.status(404).json({ error: 'Queue not found' });
@@ -220,7 +227,11 @@ app.post('/api/cancel', async (req, res) => {
 app.post('/api/admin/call', async (req, res) => {
     try {
         const { id } = req.body;
-        const query = mongoose.Types.ObjectId.isValid(id) ? { _id: id } : { queueNumber: Number(id) };
+        const strId = String(id);
+        const isObjectId = /^[0-9a-fA-F]{24}$/.test(strId);
+        const numId = Number(id);
+        const query = isObjectId ? { _id: strId } : (!isNaN(numId) ? { queueNumber: numId } : null);
+        if (!query) return res.status(400).json({ error: 'Invalid ID format' });
         const queue = await Queue.findOne(query);
 
         if (!queue) return res.status(404).json({ error: 'Queue not found' });
@@ -230,8 +241,9 @@ app.post('/api/admin/call', async (req, res) => {
         await queue.save();
 
         // Send LINE
-        if (queue.line_id && queue.queueNumber) {
-            const msg = `ถึงคิวของคุณแล้ว! (คิวที่ ${queue.queueNumber})\nกรุณามาที่หน้าร้านได้เลยครับ\n\nYour queue (${queue.queueNumber}) is ready!`;
+        if (queue.line_id) {
+            const displayId = queue.queueNumber !== undefined ? queue.queueNumber : queue._id.toString();
+            const msg = `ถึงคิวของคุณแล้ว! (คิวที่ ${displayId})\nกรุณามาที่หน้าร้านได้เลยครับ\n\nYour queue (${displayId}) is ready!`;
             await pushMessage(queue.line_id, msg);
         }
 
@@ -246,7 +258,11 @@ app.post('/api/admin/call', async (req, res) => {
 app.post('/api/admin/seat', async (req, res) => {
     try {
         const { id } = req.body;
-        const query = mongoose.Types.ObjectId.isValid(id) ? { _id: id } : { queueNumber: Number(id) };
+        const strId = String(id);
+        const isObjectId = /^[0-9a-fA-F]{24}$/.test(strId);
+        const numId = Number(id);
+        const query = isObjectId ? { _id: strId } : (!isNaN(numId) ? { queueNumber: numId } : null);
+        if (!query) return res.status(400).json({ error: 'Invalid ID format' });
         const queue = await Queue.findOne(query);
         if (!queue) return res.status(404).json({ error: 'Queue not found' });
 
@@ -266,7 +282,11 @@ app.post('/api/admin/seat', async (req, res) => {
 app.post('/api/admin/complete', async (req, res) => {
     try {
         const { id } = req.body;
-        const query = mongoose.Types.ObjectId.isValid(id) ? { _id: id } : { queueNumber: Number(id) };
+        const strId = String(id);
+        const isObjectId = /^[0-9a-fA-F]{24}$/.test(strId);
+        const numId = Number(id);
+        const query = isObjectId ? { _id: strId } : (!isNaN(numId) ? { queueNumber: numId } : null);
+        if (!query) return res.status(400).json({ error: 'Invalid ID format' });
         const queue = await Queue.findOne(query);
         if (!queue) return res.status(404).json({ error: 'Queue not found' });
 
