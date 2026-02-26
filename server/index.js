@@ -476,7 +476,10 @@ io.on('connection', async (socket) => {
     }
 });
 
+const { startAutomation } = require('./services/queueAutomation');
+
 const PORT = 3000;
 server.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
+    startAutomation(broadcastUpdate);
 });
