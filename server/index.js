@@ -119,26 +119,31 @@ async function broadcastUpdate() {
 
 // Get active queues
 app.get('/api/queues', async (req, res) => {
-    const queues = await Queue.find({ status: { $in: ['waiting', 'called', 'dining'] } }).sort({ _id: 1 }).lean();
-    queues.forEach(q => {
-        q.id = q.queueNumber !== undefined ? q.queueNumber : q._id.toString();
-    });
+    try {
+        const sessionId = await getCurrentSessionId();
+        const queues = await Queue.find({ sessionId, status: { $in: ['waiting', 'called', 'dining'] } }).sort({ queueNumber: 1 }).lean();
+        queues.forEach(q => {
+            q.id = q.queueNumber !== undefined ? q.queueNumber : q._id.toString();
+        });
 
-    // Re-calculate times (duplicate logic, should refactor but fine for now)
-    const avgTimeSetting = await Setting.findOne({ key: 'avg_time' }).lean();
-    const avgTime = parseInt(avgTimeSetting?.value || 30);
-    const TOTAL_TABLES = 10;
-    const timePerTable = avgTime / TOTAL_TABLES;
+        // Re-calculate times (duplicate logic, should refactor but fine for now)
+        const avgTimeSetting = await Setting.findOne({ key: 'avg_time' }).lean();
+        const avgTime = parseInt(avgTimeSetting?.value || 30);
+        const TOTAL_TABLES = 10;
+        const timePerTable = avgTime / TOTAL_TABLES;
 
-    let waitingCount = 0;
-    const queuesWithTime = queues.map(q => {
-        if (q.status === 'called' || q.status === 'dining') return { ...q, estimatedWaitTime: 0 };
-        const waitMins = Math.ceil((waitingCount + 1) * timePerTable);
-        waitingCount++;
-        return { ...q, estimatedWaitTime: waitMins };
-    });
+        let waitingCount = 0;
+        const queuesWithTime = queues.map(q => {
+            if (q.status === 'called' || q.status === 'dining') return { ...q, estimatedWaitTime: 0 };
+            const waitMins = Math.ceil((waitingCount + 1) * timePerTable);
+            waitingCount++;
+            return { ...q, estimatedWaitTime: waitMins };
+        });
 
-    res.json(queuesWithTime);
+        res.json(queuesWithTime);
+    } catch (e) {
+        res.json([]);
+    }
 });
 
 // Get single queue status
@@ -410,7 +415,10 @@ app.get('/api/admin/stats', async (req, res) => {
         const total = await Queue.countDocuments({ created_at: { $gte: startOfToday } });
         const completed = await Queue.countDocuments({ status: 'completed', created_at: { $gte: startOfToday } });
         const cancelled = await Queue.countDocuments({ status: 'cancelled', created_at: { $gte: startOfToday } });
-        const waiting = await Queue.countDocuments({ status: 'waiting' });
+
+        let sessionId;
+        try { sessionId = await getCurrentSessionId(); } catch (e) { sessionId = null; }
+        const waiting = sessionId ? await Queue.countDocuments({ sessionId, status: 'waiting' }) : 0;
 
         res.json({ total, completed, cancelled, waiting });
     } catch (err) {
@@ -466,12 +474,14 @@ io.on('connection', async (socket) => {
 
     // Send initial state manually
     try {
-        const queues = await Queue.find({ status: { $in: ['waiting', 'called', 'dining'] } }).sort({ _id: 1 }).lean();
+        const sessionId = await getCurrentSessionId();
+        const queues = await Queue.find({ sessionId, status: { $in: ['waiting', 'called', 'dining'] } }).sort({ queueNumber: 1 }).lean();
         queues.forEach(q => {
             q.id = q.queueNumber !== undefined ? q.queueNumber : q._id.toString();
         });
         socket.emit('queue_updated', queues);
     } catch (error) {
+        socket.emit('queue_updated', []);
         console.error('Socket init error:', error);
     }
 });
