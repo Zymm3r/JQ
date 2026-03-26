@@ -117,6 +117,11 @@ async function broadcastUpdate() {
 
 // --- API Routes ---
 
+// Keep-Alive Ping for Render / cron-job.org
+app.get('/ping', (req, res) => {
+    res.status(200).send('Server is awake');
+});
+
 // Get active queues
 app.get('/api/queues', async (req, res) => {
     try {
